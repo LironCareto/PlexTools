@@ -386,10 +386,18 @@ def fingerprint(frame: bytes) -> Fingerprint:
     return Fingerprint(bits=bits, bit_count=bit_count, contrast=contrast)
 
 
+def population_count(value: int) -> int:
+    """Count set bits without requiring int.bit_count()."""
+    bit_count = getattr(int, "bit_count", None)
+    if bit_count is not None:
+        return bit_count(value)
+    return bin(value).count("1")
+
+
 def fingerprint_distance(left: Fingerprint, right: Fingerprint) -> float:
     if left.bit_count != right.bit_count:
         raise ValueError("Fingerprint sizes do not match")
-    return (left.bits ^ right.bits).bit_count() / left.bit_count
+    return population_count(left.bits ^ right.bits) / left.bit_count
 
 
 def run_ffmpeg_raw(command: list[str], context: str) -> bytes:
