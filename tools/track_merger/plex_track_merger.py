@@ -580,9 +580,16 @@ def least_squares(matches: list[Match]) -> tuple[float, float]:
     return slope, intercept
 
 
-def fit_robust_model(matches: list[Match], residual_limit: float) -> AlignmentModel:
-    if len(matches) < 3:
-        raise ValueError("At least three visual matches are required for alignment")
+def fit_robust_model(
+    matches: list[Match],
+    residual_limit: float,
+    minimum_inliers: int = 3,
+    expected_slope: float | None = None,
+) -> AlignmentModel:
+    if len(matches) < minimum_inliers:
+        raise ValueError(
+            f"At least {minimum_inliers} visual matches are required for alignment"
+        )
 
     best_inliers: list[Match] = []
     best_score = None
@@ -608,16 +615,21 @@ def fit_robust_model(matches: list[Match], residual_limit: float) -> AlignmentMo
                     - ((slope * match.source_time) + intercept)
                 ) <= residual_limit
             ]
-            if len(inliers) < 3:
+            if len(inliers) < minimum_inliers:
                 continue
 
             distance_score = sum(match.distance for match in inliers)
-            score = (len(inliers), -distance_score)
+            slope_penalty = (
+                abs(slope - expected_slope)
+                if expected_slope is not None
+                else 0.0
+            )
+            score = (len(inliers), -slope_penalty, -distance_score)
             if best_score is None or score > best_score:
                 best_score = score
                 best_inliers = inliers
 
-    if len(best_inliers) < 3:
+    if len(best_inliers) < minimum_inliers:
         raise ValueError("Could not find a consistent visual time mapping")
 
     slope, intercept = least_squares(best_inliers)
@@ -631,7 +643,10 @@ def fit_robust_model(matches: list[Match], residual_limit: float) -> AlignmentMo
         for match, residual in zip(best_inliers, residuals)
         if abs(residual) <= residual_limit
     ]
-    if len(refined_inliers) >= 3 and len(refined_inliers) != len(best_inliers):
+    if (
+        len(refined_inliers) >= minimum_inliers
+        and len(refined_inliers) != len(best_inliers)
+    ):
         slope, intercept = least_squares(refined_inliers)
         best_inliers = refined_inliers
         residuals = [
@@ -731,7 +746,15 @@ def coarse_alignment(
             f"-> target {format_duration(target_time)} distance={distance:.3f}"
         )
 
-    model = fit_robust_model(matches, residual_limit=4.0)
+    # The coarse phase may legitimately produce only two high-confidence
+    # correspondences. Two points are enough to seed an affine mapping; the
+    # denser refined pass is responsible for validating or rejecting it.
+    model = fit_robust_model(
+        matches,
+        residual_limit=4.0,
+        minimum_inliers=2,
+        expected_slope=slope_guess,
+    )
     return model, matches
 
 
@@ -788,7 +811,11 @@ def refined_alignment(
             continue
 
         target_time, distance = best
-        if distance > 0.22:
+        # The refined search is only +/- 3 seconds around a model prediction,
+        # so it can safely tolerate a much weaker perceptual match than the
+        # wide coarse search. Residual validation below still rejects temporal
+        # inconsistencies.
+        if distance > 0.45:
             print(
                 f"[{index}/{len(anchors)}] source {format_duration(source_time)} "
                 f"-> weak match {format_duration(target_time)} distance={distance:.3f}"
@@ -802,7 +829,12 @@ def refined_alignment(
             f"-> target {format_duration(target_time)} distance={distance:.3f}"
         )
 
-    model = fit_robust_model(matches, residual_limit=0.75)
+    model = fit_robust_model(
+        matches,
+        residual_limit=0.75,
+        minimum_inliers=3,
+        expected_slope=coarse_model.slope,
+    )
     return model, matches
 
 
