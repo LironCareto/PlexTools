@@ -114,6 +114,14 @@ If the sidecar was deleted, it is no longer present to match the hash, so the ne
 
 This makes the script suitable for periodic execution by a scheduler.
 
+The default configuration is resolved relative to the script itself, not the scheduler's working directory. A scheduled task can therefore invoke the script by absolute path without a preceding `cd`:
+
+```bash
+/bin/python3 "/path/to/PlexTools/tools/subs_extractor/plex_subs_extractor.py" --write
+```
+
+The local `config.json` belongs beside `plex_subs_extractor.py` and remains ignored by Git.
+
 ### Override configuration from the command line
 
 The database folder can still be supplied directly:
