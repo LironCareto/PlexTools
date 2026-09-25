@@ -1,6 +1,0 @@
-{
-  "database_folder": "/path/to/Plex Media Server/Plug-in Support/Databases",
-  "path_maps": [
-    "/plex/media=/local/media"
-  ]
-}

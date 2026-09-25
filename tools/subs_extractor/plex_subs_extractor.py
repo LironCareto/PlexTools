@@ -18,7 +18,7 @@ from pathlib import Path
 
 LIBRARY_DB = "com.plexapp.plugins.library.db"
 BLOBS_DB = "com.plexapp.plugins.library.blobs.db"
-DEFAULT_CONFIG = Path(__file__).resolve().with_name("config.json")
+DEFAULT_CONFIG = Path(__file__).resolve().parents[2] / "config.json"
 
 
 def open_readonly(db_path: Path) -> sqlite3.Connection:
@@ -248,8 +248,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_CONFIG,
         help=(
-            "Local JSON configuration file. Defaults to config.json beside this "
-            "script. The file can contain database_folder and path_maps."
+            "Shared PlexTools JSON configuration file. Defaults to the repository-root "
+            "config.json."
         ),
     )
     parser.add_argument(
@@ -297,21 +297,26 @@ def main() -> int:
 
     try:
         config = load_config(args.config)
-        configured_database = config.get("database_folder")
+
+        plex_config = config.get("plex", {})
+        if not isinstance(plex_config, dict):
+            raise ValueError("'plex' in config must be a JSON object")
+
+        configured_database = plex_config.get("database_folder")
 
         if args.database_folder is not None:
             database_folder = args.database_folder
         elif configured_database:
             if not isinstance(configured_database, str):
-                raise ValueError("'database_folder' in config must be a string")
+                raise ValueError("'plex.database_folder' in config must be a string")
             database_folder = Path(configured_database)
         else:
             raise ValueError(
-                "No database folder configured. Set database_folder in config.json "
+                "No database folder configured. Set plex.database_folder in config.json "
                 "or pass --database-folder."
             )
 
-        path_maps = args.path_map if args.path_map else config_path_maps(config)
+        path_maps = args.path_map if args.path_map else config_path_maps(plex_config)
     except ValueError as exc:
         print(f"[FATAL] {exc}", file=sys.stderr)
         return 2

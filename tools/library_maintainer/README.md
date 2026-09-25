@@ -41,7 +41,7 @@ PlexLibraryMaintainer is deliberately conservative:
   folder name and Plex title are reported as `[SUSPICIOUS]` and skipped.
 - Ambiguous folders are skipped and reported for review.
 - Only Plex libraries of type **movie** are eligible for folder normalization.
-- Machine-specific paths and library choices can live in local `config.json`, which is ignored by Git.
+- Machine-specific paths and library choices live in the shared repository-root `config.json`, which is ignored by Git.
 
 The script changes the filesystem only when `--write` is used. It never writes to Plex's databases.
 
@@ -52,37 +52,39 @@ The script changes the filesystem only when `--write` is used. It never writes t
 
 ## Configuration
 
-Copy the example:
+PlexLibraryMaintainer uses the shared `config.json` in the PlexTools repository root. Create it from the root example:
 
 ```bash
 cp config.example.json config.json
 ```
 
-On PowerShell:
-
-```powershell
-Copy-Item config.example.json config.json
-```
-
-Then edit the local file:
+Relevant settings are:
 
 ```json
 {
-  "database_folder": "/path/to/Plex Media Server/Plug-in Support/Databases",
-  "libraries": [
-    "Movies"
-  ],
-  "path_maps": [
-    "/plex/media=/local/media"
-  ]
+  "plex": {
+    "database_folder": "/path/to/Plex Media Server/Plug-in Support/Databases",
+    "path_maps": [
+      "/plex/media=/local/media"
+    ]
+  },
+  "media_tools": {
+    "ffprobe_path": "",
+    "ffmpeg_path": ""
+  },
+  "tools": {
+    "library_maintainer": {
+      "libraries": [
+        "Movies"
+      ]
+    }
+  }
 }
 ```
 
-`config.json` is ignored by Git and should remain local.
+`config.json` is ignored by Git and should remain local. Library entries may be exact Plex library names or numeric library IDs. Command-line `--library` values override the configured list. If Plex and the script see the same filesystem paths, `plex.path_maps` can be an empty array. The media-tool executable paths are optional; leave them empty to use automatic discovery.
 
-Library entries may be exact Plex library names or numeric library IDs. Command-line `--library` values override the configured list.
-
-If Plex and the script see the same filesystem paths, `path_maps` can be an empty array.
+`--config` can still point to an alternate file using the same structure.
 
 ## Usage
 

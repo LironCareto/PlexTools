@@ -1,0 +1,21 @@
+{
+  "plex": {
+    "database_folder": "/path/to/Plex Media Server/Plug-in Support/Databases",
+    "path_maps": [
+      "/plex/media=/local/media"
+    ]
+  },
+  "media_tools": {
+    "ffprobe_path": "",
+    "ffmpeg_path": ""
+  },
+  "tools": {
+    "library_maintainer": {
+      "libraries": [
+        "Movies"
+      ]
+    },
+    "subs_extractor": {},
+    "track_merger": {}
+  }
+}

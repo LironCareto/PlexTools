@@ -1,6 +1,6 @@
 # PlexTools
 
-A collection of conservative tools for maintaining and improving Plex media libraries.
+A collection of conservative, specialized tools for maintaining and improving Plex media libraries.
 
 This monorepo consolidates two existing projects:
 
@@ -18,10 +18,19 @@ Imported snapshots:
 
 - `tools/library_maintainer/` — conservative Plex library maintenance and duplicate-media analysis.
 - `tools/subs_extractor/` — extraction of subtitle blobs stored by Plex into sidecar files.
+- `tools/track_merger/` — track transplant/alignment tool under development.
+
+## Shared configuration
+
+PlexTools uses one machine-local `config.json` at the repository root. Copy `config.example.json` to `config.json` and fill in the paths and settings for the machine running the tools.
+
+The shared sections contain Plex database/path settings and media-tool executables. Tool-specific settings live below `tools`.
+
+`config.json` is ignored by Git and must not be committed. Individual tools still accept `--config` when an alternate configuration file is required.
 
 ## Safety
 
-The tools retain their existing safety models: Plex databases are treated as read-only, destructive actions are avoided, and machine-specific configuration belongs in local ignored files.
+The tools retain their existing safety models: Plex databases are treated as read-only, destructive actions are avoided, and machine-specific configuration belongs in the ignored root `config.json`.
 
 ## License
 

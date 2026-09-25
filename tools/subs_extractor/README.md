@@ -23,7 +23,7 @@ PlexSubsExtractor is deliberately conservative:
 - Before creating a file, the script compares SHA-256 hashes against existing sidecars for the same video/language/forced/format. Identical content is treated as already extracted and skipped.
 - If the filename collides but the subtitle content is different, a numbered filename such as `Movie(1).eng.srt`, `Movie(2).eng.srt`, etc. is used, keeping Plex's language/forced suffix intact.
 - The script contains no SQL writes or commits to the Plex databases.
-- Machine-specific paths can live in a local `config.json`, which is ignored by Git.
+- Machine-specific paths live in the shared repository-root `config.json`, which is ignored by Git.
 
 In other words, the script reads Plex's databases and writes subtitle sidecar files. It does not modify Plex's databases.
 
@@ -34,32 +34,28 @@ In other words, the script reads Plex's databases and writes subtitle sidecar fi
 
 ## Configuration
 
-Copy the example configuration:
+PlexSubsExtractor uses the shared `config.json` in the PlexTools repository root. Create it from the root example:
 
 ```bash
 cp config.example.json config.json
 ```
 
-On PowerShell:
-
-```powershell
-Copy-Item config.example.json config.json
-```
-
-Then edit `config.json` with the paths that apply to your machine:
+The extractor uses the shared Plex section:
 
 ```json
 {
-  "database_folder": "/path/to/Plex Media Server/Plug-in Support/Databases",
-  "path_maps": [
-    "/plex/media=/local/media"
-  ]
+  "plex": {
+    "database_folder": "/path/to/Plex Media Server/Plug-in Support/Databases",
+    "path_maps": [
+      "/plex/media=/local/media"
+    ]
+  }
 }
 ```
 
-`config.json` is listed in `.gitignore` and should remain local.
+`config.json` is ignored by Git and should remain local. The `--write` and `--force` safety switches are intentionally not configurable; they must be passed explicitly on the command line.
 
-The `--write` and `--force` safety switches are intentionally **not** configurable in the file. They must always be passed explicitly on the command line.
+`--config` can still point to an alternate file using the same structure.
 
 ## Usage
 
@@ -114,13 +110,13 @@ If the sidecar was deleted, it is no longer present to match the hash, so the ne
 
 This makes the script suitable for periodic execution by a scheduler.
 
-The default configuration is resolved relative to the script itself, not the scheduler's working directory. A scheduled task can therefore invoke the script by absolute path without a preceding `cd`:
+The default configuration is resolved from the PlexTools repository root, not the scheduler's working directory. A scheduled task can therefore invoke the script by absolute path without a preceding `cd`:
 
 ```bash
 /bin/python3 "/path/to/PlexTools/tools/subs_extractor/plex_subs_extractor.py" --write
 ```
 
-The local `config.json` belongs beside `plex_subs_extractor.py` and remains ignored by Git.
+The shared local `config.json` belongs at the PlexTools repository root and remains ignored by Git.
 
 ### Override configuration from the command line
 

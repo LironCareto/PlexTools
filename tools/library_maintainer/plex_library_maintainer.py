@@ -28,7 +28,7 @@ from pathlib import Path
 from ffmpeg_probe import probe_media_file_ffmpeg
 
 LIBRARY_DB = "com.plexapp.plugins.library.db"
-DEFAULT_CONFIG = Path("config.json")
+DEFAULT_CONFIG = Path(__file__).resolve().parents[2] / "config.json"
 SUSPICIOUS_SIMILARITY_THRESHOLD = 0.55
 DUPLICATE_DURATION_TOLERANCE_SECONDS = 5.0
 
@@ -3055,7 +3055,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--config",
         type=Path,
         default=DEFAULT_CONFIG,
-        help="Local JSON configuration file. Defaults to ./config.json if present.",
+        help="Shared PlexTools JSON configuration file. Defaults to the repository-root config.json.",
     )
     parser.add_argument(
         "-d",
@@ -3237,32 +3237,57 @@ def main() -> int:
 
     try:
         config = load_config(args.config)
-        configured_database = config.get("database_folder")
+
+        plex_config = config.get("plex", {})
+        media_tools_config = config.get("media_tools", {})
+        tools_config = config.get("tools", {})
+
+        if not isinstance(plex_config, dict):
+            raise ValueError("'plex' in config must be a JSON object")
+        if not isinstance(media_tools_config, dict):
+            raise ValueError("'media_tools' in config must be a JSON object")
+        if not isinstance(tools_config, dict):
+            raise ValueError("'tools' in config must be a JSON object")
+
+        library_config = tools_config.get("library_maintainer", {})
+        if not isinstance(library_config, dict):
+            raise ValueError("'tools.library_maintainer' in config must be a JSON object")
+
+        configured_database = plex_config.get("database_folder")
 
         if args.database_folder is not None:
             database_folder = args.database_folder
         elif configured_database:
             if not isinstance(configured_database, str):
-                raise ValueError("'database_folder' in config must be a string")
+                raise ValueError("'plex.database_folder' in config must be a string")
             database_folder = Path(configured_database)
         else:
             raise ValueError(
-                "No database folder configured. Set database_folder in config.json "
+                "No database folder configured. Set plex.database_folder in config.json "
                 "or pass --database-folder."
             )
 
-        path_maps = args.path_map if args.path_map else config_path_maps(config)
-        ffprobe_path = configured_executable(config.get("ffprobe_path"), "ffprobe_path")
-        ffmpeg_path = configured_executable(config.get("ffmpeg_path"), "ffmpeg_path")
+        path_maps = args.path_map if args.path_map else config_path_maps(plex_config)
+        ffprobe_path = configured_executable(
+            media_tools_config.get("ffprobe_path"),
+            "media_tools.ffprobe_path",
+        )
+        ffmpeg_path = configured_executable(
+            media_tools_config.get("ffmpeg_path"),
+            "media_tools.ffmpeg_path",
+        )
 
         if args.library:
             requested_libraries = args.library
         else:
-            raw_libraries = config.get("libraries", [])
+            raw_libraries = library_config.get("libraries", [])
             if not isinstance(raw_libraries, list) or not all(
                 isinstance(item, (str, int)) for item in raw_libraries
             ):
-                raise ValueError("'libraries' in config must be an array of names or IDs")
+                raise ValueError(
+                    "'tools.library_maintainer.libraries' in config must be an array "
+                    "of names or IDs"
+                )
             requested_libraries = [str(item) for item in raw_libraries]
     except (ValueError, argparse.ArgumentTypeError) as exc:
         print(f"[FATAL] {exc}", file=sys.stderr)
@@ -3287,7 +3312,7 @@ def main() -> int:
 
         if not requested_libraries:
             print(
-                "[FATAL] No libraries selected. Set 'libraries' in config.json "
+                "[FATAL] No libraries selected. Set 'tools.library_maintainer.libraries' in config.json "
                 "or pass --library.",
                 file=sys.stderr,
             )
