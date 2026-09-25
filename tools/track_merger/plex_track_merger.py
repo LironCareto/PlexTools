@@ -24,8 +24,8 @@ THUMB_WIDTH = 32
 THUMB_HEIGHT = 18
 THUMB_BYTES = THUMB_WIDTH * THUMB_HEIGHT
 
-CREDIT_WIDTH = 64
-CREDIT_HEIGHT = 36
+CREDIT_WIDTH = 128
+CREDIT_HEIGHT = 72
 CREDIT_BYTES = CREDIT_WIDTH * CREDIT_HEIGHT
 CREDIT_SAMPLE_INTERVAL = 2.0
 
@@ -473,20 +473,23 @@ def credit_frame_stats(frame: bytes) -> tuple[float, float, float, float, float]
 
     total = len(frame)
     dark = sum(1 for value in frame if value <= 45)
-    bright = sum(1 for value in frame if value >= 180)
+    # Credit text becomes substantially dimmer after downscaling because thin
+    # glyph strokes are averaged with the black background. 140 preserves the
+    # text signal without requiring OCR.
+    bright = sum(1 for value in frame if value >= 140)
     middle = total - dark - bright
 
     bright_rows = 0
     for y in range(CREDIT_HEIGHT):
         row = frame[y * CREDIT_WIDTH : (y + 1) * CREDIT_WIDTH]
-        if sum(1 for value in row if value >= 180) >= 2:
+        if sum(1 for value in row if value >= 140) >= 2:
             bright_rows += 1
 
     bright_columns = 0
     for x in range(CREDIT_WIDTH):
         count = 0
         for y in range(CREDIT_HEIGHT):
-            if frame[(y * CREDIT_WIDTH) + x] >= 180:
+            if frame[(y * CREDIT_WIDTH) + x] >= 140:
                 count += 1
         if count >= 2:
             bright_columns += 1
@@ -503,11 +506,11 @@ def credit_frame_stats(frame: bytes) -> tuple[float, float, float, float, float]
 def credit_like_frame(frame: bytes) -> bool:
     dark, bright, middle, bright_rows, bright_columns = credit_frame_stats(frame)
     return (
-        dark >= 0.58
-        and 0.015 <= bright <= 0.35
-        and middle <= 0.32
-        and bright_rows >= 0.18
-        and bright_columns >= 0.22
+        dark >= 0.55
+        and 0.006 <= bright <= 0.40
+        and middle <= 0.35
+        and bright_rows >= 0.12
+        and bright_columns >= 0.15
     )
 
 
