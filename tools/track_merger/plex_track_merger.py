@@ -26,7 +26,7 @@ THUMB_BYTES = THUMB_WIDTH * THUMB_HEIGHT
 
 CREDIT_WIDTH = 128
 CREDIT_HEIGHT = 72
-CREDIT_BYTES = CREDIT_WIDTH * CREDIT_HEIGHT
+CREDIT_BYTES = CREDIT_WIDTH * CREDIT_HEIGHT * 3
 CREDIT_SAMPLE_INTERVAL = 2.0
 
 
@@ -467,50 +467,88 @@ def extract_useful_anchor(
     return None
 
 
-def credit_frame_stats(frame: bytes) -> tuple[float, float, float, float, float]:
+def credit_frame_stats(
+    frame: bytes,
+) -> tuple[float, float, float, float, float, float]:
     if len(frame) != CREDIT_BYTES:
         raise ValueError("Invalid credit-detection frame size")
 
-    total = len(frame)
-    dark = sum(1 for value in frame if value <= 45)
-    # Credit text becomes substantially dimmer after downscaling because thin
-    # glyph strokes are averaged with the black background. 140 preserves the
-    # text signal without requiring OCR.
-    bright = sum(1 for value in frame if value >= 140)
-    middle = total - dark - bright
+    pixels = [
+        frame[index : index + 3]
+        for index in range(0, len(frame), 3)
+    ]
+    total = len(pixels)
+
+    dark_mask = []
+    text_mask = []
+    colorful_mask = []
+
+    for red, green, blue in pixels:
+        high = max(red, green, blue)
+        low = min(red, green, blue)
+        spread = high - low
+
+        dark = high <= 45
+        # White/grey credit text should remain nearly neutral in RGB even
+        # after scaling. This rejects dark but colourful movie scenes.
+        neutral_bright = low >= 120 and spread <= 32
+        colorful = high >= 70 and spread >= 48
+
+        dark_mask.append(dark)
+        text_mask.append(neutral_bright)
+        colorful_mask.append(colorful)
+
+    dark = sum(dark_mask)
+    bright = sum(text_mask)
+    colorful = sum(colorful_mask)
 
     bright_rows = 0
     for y in range(CREDIT_HEIGHT):
-        row = frame[y * CREDIT_WIDTH : (y + 1) * CREDIT_WIDTH]
-        if sum(1 for value in row if value >= 140) >= 2:
+        start = y * CREDIT_WIDTH
+        end = start + CREDIT_WIDTH
+        if sum(text_mask[start:end]) >= 2:
             bright_rows += 1
 
     bright_columns = 0
     for x in range(CREDIT_WIDTH):
-        count = 0
-        for y in range(CREDIT_HEIGHT):
-            if frame[(y * CREDIT_WIDTH) + x] >= 140:
-                count += 1
+        count = sum(
+            1
+            for y in range(CREDIT_HEIGHT)
+            if text_mask[(y * CREDIT_WIDTH) + x]
+        )
         if count >= 2:
             bright_columns += 1
+
+    non_dark = max(1, total - dark)
+    neutral_share = bright / non_dark
 
     return (
         dark / total,
         bright / total,
-        middle / total,
+        colorful / total,
+        neutral_share,
         bright_rows / CREDIT_HEIGHT,
         bright_columns / CREDIT_WIDTH,
     )
 
 
 def credit_like_frame(frame: bytes) -> bool:
-    dark, bright, middle, bright_rows, bright_columns = credit_frame_stats(frame)
+    (
+        dark,
+        bright,
+        colorful,
+        neutral_share,
+        bright_rows,
+        bright_columns,
+    ) = credit_frame_stats(frame)
+
     return (
-        dark >= 0.55
-        and 0.006 <= bright <= 0.40
-        and middle <= 0.35
-        and bright_rows >= 0.12
-        and bright_columns >= 0.15
+        dark >= 0.58
+        and 0.004 <= bright <= 0.32
+        and colorful <= 0.08
+        and neutral_share >= 0.20
+        and bright_rows >= 0.10
+        and bright_columns >= 0.12
     )
 
 
@@ -538,14 +576,14 @@ def detect_end_credits(
         "-t",
         f"{lookback:.6f}",
         "-vf",
-        f"fps={rate:.8f},scale={CREDIT_WIDTH}:{CREDIT_HEIGHT}:flags=area,format=gray",
+        f"fps={rate:.8f},scale={CREDIT_WIDTH}:{CREDIT_HEIGHT}:flags=area,format=rgb24",
         "-an",
         "-sn",
         "-dn",
         "-f",
         "rawvideo",
         "-pix_fmt",
-        "gray",
+        "rgb24",
         "pipe:1",
     ]
     raw = run_ffmpeg_raw(command, f"detecting end credits in {path}")
