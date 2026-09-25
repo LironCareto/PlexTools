@@ -838,6 +838,141 @@ def refined_alignment(
     return model, matches
 
 
+def tail_discontinuity_scan(
+    ffmpeg: str,
+    source: dict,
+    target: dict,
+    model: AlignmentModel,
+) -> list[tuple[Match, float]]:
+    source_duration = media_duration(source)
+    target_duration = media_duration(target)
+    if source_duration is None or target_duration is None:
+        raise ValueError("Both media files need known durations for discontinuity scan")
+
+    scan_start = max(180.0, source_duration - 1800.0)
+    scan_end = max(scan_start, source_duration - 60.0)
+    step = 120.0
+
+    requested_times = []
+    current = scan_start
+    while current <= scan_end:
+        requested_times.append(current)
+        current += step
+
+    results: list[tuple[Match, float]] = []
+
+    print()
+    print("Tail discontinuity scan")
+    print("=======================")
+    print(
+        f"Source region         : {format_duration(scan_start)} "
+        f"to {format_duration(scan_end)}"
+    )
+    print(f"Anchors              : {len(requested_times)}")
+    print("Target search        : +/- 8 s at 12 fps around global mapping")
+    print()
+
+    for index, requested_time in enumerate(requested_times, start=1):
+        source_anchor = extract_useful_anchor(
+            ffmpeg,
+            source["path"],
+            requested_time,
+            source_duration,
+        )
+        if source_anchor is None:
+            print(
+                f"[{index}/{len(requested_times)}] "
+                f"source {format_duration(requested_time)} -> no useful frame"
+            )
+            continue
+
+        source_time, source_fp = source_anchor
+        predicted_target = (model.slope * source_time) + model.intercept
+        search_start = max(0.0, predicted_target - 8.0)
+        search_end = min(target_duration, predicted_target + 8.0)
+        target_frames = extract_window(
+            ffmpeg,
+            target["path"],
+            search_start,
+            max(0.5, search_end - search_start),
+            rate=12.0,
+        )
+        best = best_window_match(source_fp, target_frames)
+        if best is None:
+            print(
+                f"[{index}/{len(requested_times)}] "
+                f"source {format_duration(source_time)} -> no target frames"
+            )
+            continue
+
+        target_time, distance = best
+        if distance > 0.45:
+            print(
+                f"[{index}/{len(requested_times)}] "
+                f"source {format_duration(source_time)} -> weak match "
+                f"{format_duration(target_time)} distance={distance:.3f}"
+            )
+            continue
+
+        residual = target_time - predicted_target
+        match = Match(source_time, target_time, distance)
+        results.append((match, residual))
+        print(
+            f"[{index}/{len(requested_times)}] "
+            f"source {format_duration(source_time)} "
+            f"-> target {format_duration(target_time)} "
+            f"residual={residual:+.3f}s distance={distance:.3f}"
+        )
+
+    print()
+    if not results:
+        print("Tail scan result      : no usable visual matches")
+        return results
+
+    stable = [
+        (match, residual)
+        for match, residual in results
+        if abs(residual) <= 0.75
+    ]
+    shifted = [
+        (match, residual)
+        for match, residual in results
+        if abs(residual) >= 1.5
+    ]
+
+    print(f"Tail matches          : {len(results)}")
+    print(f"Within +/-0.75 s      : {len(stable)}")
+    print(f"Shifted >= 1.5 s      : {len(shifted)}")
+
+    if shifted:
+        first_match, first_residual = shifted[0]
+        print(
+            "First clear deviation : "
+            f"source {format_duration(first_match.source_time)} "
+            f"(residual {first_residual:+.3f} s)"
+        )
+        later = [
+            residual
+            for match, residual in results
+            if match.source_time >= first_match.source_time
+            and abs(residual) >= 1.5
+        ]
+        if len(later) >= 2:
+            print(
+                "Tail scan result      : persistent timeline shift detected "
+                "near the end"
+            )
+        else:
+            print(
+                "Tail scan result      : isolated late deviation; "
+                "needs another local check"
+            )
+    else:
+        print("Tail scan result      : no clear late discontinuity detected")
+
+    return results
+
+
 def print_alignment_result(
     source: dict,
     target: dict,
@@ -920,6 +1055,12 @@ def perform_visual_alignment(
             target,
             coarse_model,
             count=validation_anchors,
+        )
+        tail_discontinuity_scan(
+            ffmpeg,
+            source,
+            target,
+            refined_model,
         )
     except ValueError as exc:
         print()
