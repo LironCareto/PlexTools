@@ -18,7 +18,7 @@ from pathlib import Path
 
 LIBRARY_DB = "com.plexapp.plugins.library.db"
 BLOBS_DB = "com.plexapp.plugins.library.blobs.db"
-DEFAULT_CONFIG = Path("config.json")
+DEFAULT_CONFIG = Path(__file__).resolve().with_name("config.json")
 
 
 def open_readonly(db_path: Path) -> sqlite3.Connection:
@@ -248,8 +248,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_CONFIG,
         help=(
-            "Local JSON configuration file. Defaults to ./config.json if present. "
-            "The file can contain database_folder and path_maps."
+            "Local JSON configuration file. Defaults to config.json beside this "
+            "script. The file can contain database_folder and path_maps."
         ),
     )
     parser.add_argument(
@@ -321,6 +321,7 @@ def main() -> int:
 
     print("PlexSubsExtractor")
     print("=================")
+    print(f"Config     : {args.config}")
     print(f"Library DB : {library_db}")
     print(f"Blobs DB   : {blob_db}")
     print("DB access  : READ ONLY (SQLite mode=ro + PRAGMA query_only)")
