@@ -33,15 +33,23 @@ M1 never creates or modifies a media file.
 
 ### M2 — Visual alignment
 
-Planned.
+Implemented as a read-only prototype.
 
-Sample visual evidence across both masters, generate perceptual fingerprints that tolerate different encodes/resolutions, find candidate correspondences, and fit a robust time mapping.
+With `--align`, the tool:
+
+- chooses visual anchors across the movie while avoiding the extreme beginning/end;
+- extracts tiny normalized grayscale frames with ffmpeg;
+- builds perceptual gradient fingerprints so exact binary frame equality is not required;
+- searches a target window around each predicted correspondence;
+- fits a robust affine mapping of the form `target_time = a * source_time + b`;
+- performs a second validation pass at more anchors and higher temporal resolution;
+- reports median/max residuals and refuses to call the mapping reliable when the visual evidence is inconsistent.
+
+The first pass uses frame-rate/duration information only to define a search neighborhood. The final mapping comes from visual correspondences.
 
 ### M3 — Alignment validation
 
-Planned.
-
-Validate the mapping across the full runtime, detect discontinuities or differing cuts, and refuse transplantation when confidence is insufficient.
+Partially implemented by the M2 validation pass. The next step is stronger discontinuity detection and piecewise mapping when a movie contains inserted/removed material.
 
 ### M4 — Track transplant
 
@@ -51,7 +59,7 @@ Extract the selected source track, apply the validated temporal transformation, 
 
 ## Configuration
 
-PlexTrackMerger uses the shared repository-root `config.json`. M1 only needs `media_tools.ffprobe_path` when ffprobe is not already discoverable.
+PlexTrackMerger uses the shared repository-root `config.json`. Inventory uses `media_tools.ffprobe_path`; visual alignment also uses `media_tools.ffmpeg_path` when those binaries are not already discoverable.
 
 No tool-specific configuration is required yet.
 
@@ -65,7 +73,17 @@ python3 tools/track_merger/plex_track_merger.py \
   "/path/to/target.mkv"
 ```
 
-M1 only reports information. It does not perform a merge.
+Without `--align`, the tool only reports M1 inventory information.
+
+To run visual alignment:
+
+```bash
+python3 tools/track_merger/plex_track_merger.py --align \
+  "/path/to/source.mkv" \
+  "/path/to/target.mkv"
+```
+
+Alignment remains read-only. No track is extracted, retimed, or remuxed.
 
 ## License
 
