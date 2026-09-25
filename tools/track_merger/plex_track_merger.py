@@ -1243,8 +1243,36 @@ def perform_visual_alignment(
             target_duration,
         )
 
+        inferred_source_credits = None
+        inferred_target_credits = None
+
+        slope_guess = initial_slope(source, target)
+        intercept_guess = (
+            target_duration - (slope_guess * source_duration)
+        ) / 2.0
+
+        if source_credits is None and target_credits is not None:
+            inferred_source_credits = (
+                target_credits - intercept_guess
+            ) / slope_guess
+            if not 0.0 < inferred_source_credits < source_duration:
+                inferred_source_credits = None
+
+        if target_credits is None and source_credits is not None:
+            inferred_target_credits = (
+                slope_guess * source_credits
+            ) + intercept_guess
+            if not 0.0 < inferred_target_credits < target_duration:
+                inferred_target_credits = None
+
         if source_credits is None:
-            print("Source credits start  : not detected")
+            if inferred_source_credits is None:
+                print("Source credits start  : not detected")
+            else:
+                print(
+                    f"Source credits start  : {format_duration(inferred_source_credits)} "
+                    "(inferred from target)"
+                )
         else:
             print(
                 f"Source credits start  : {format_duration(source_credits)} "
@@ -1252,12 +1280,24 @@ def perform_visual_alignment(
             )
 
         if target_credits is None:
-            print("Target credits start  : not detected")
+            if inferred_target_credits is None:
+                print("Target credits start  : not detected")
+            else:
+                print(
+                    f"Target credits start  : {format_duration(inferred_target_credits)} "
+                    "(inferred from source)"
+                )
         else:
             print(
                 f"Target credits start  : {format_duration(target_credits)} "
                 f"(visual confidence {target_credit_confidence:.0%})"
             )
+
+        source_content_end = (
+            source_credits
+            if source_credits is not None
+            else inferred_source_credits
+        )
 
         coarse_model, _ = coarse_alignment(
             ffmpeg,
@@ -1265,7 +1305,7 @@ def perform_visual_alignment(
             target,
             count=coarse_anchors,
             window_radius=search_radius,
-            source_content_end=source_credits,
+            source_content_end=source_content_end,
         )
         refined_model, refined_candidates = refined_alignment(
             ffmpeg,
@@ -1273,14 +1313,14 @@ def perform_visual_alignment(
             target,
             coarse_model,
             count=validation_anchors,
-            source_content_end=source_credits,
+            source_content_end=source_content_end,
         )
         tail_discontinuity_scan(
             ffmpeg,
             source,
             target,
             refined_model,
-            source_content_end=source_credits,
+            source_content_end=source_content_end,
         )
     except ValueError as exc:
         print()
