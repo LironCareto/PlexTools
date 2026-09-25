@@ -1,0 +1,11 @@
+{
+  "database_folder": "/path/to/Plex Media Server/Plug-in Support/Databases",
+  "libraries": [
+    "Movies"
+  ],
+  "path_maps": [
+    "/plex/media=/local/media"
+  ],
+  "ffprobe_path": "/path/to/ffprobe",
+  "ffmpeg_path": "/path/to/ffmpeg"
+}
