@@ -9,6 +9,11 @@ This monorepo consolidates two existing projects:
 
 The original repositories remain available with their original commit histories. Their current code is migrated here as independent tools so future shared infrastructure, analysis features, and an optional local web interface can evolve in one place.
 
+Imported snapshots:
+
+- PlexLibraryMaintainer: `bd4d9431e54b8c70e115a210256c079298905b7c`
+- PlexSubsExtractor: `ab54f068e2877a50feb1927b6b7d1700073c4cc1`
+
 ## Tools
 
 - `tools/library_maintainer/` — conservative Plex library maintenance and duplicate-media analysis.
