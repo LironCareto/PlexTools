@@ -25,12 +25,6 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
-
-from ffmpeg_probe import probe_media_file_ffmpeg
-
 LIBRARY_DB = "com.plexapp.plugins.library.db"
 DEFAULT_CONFIG = Path(__file__).resolve().parents[2] / "config.json"
 SUSPICIOUS_SIMILARITY_THRESHOLD = 0.55
@@ -2376,6 +2370,40 @@ def probe_media_file(ffprobe: str, path: Path):
         "audio": audio,
         "subtitles": subtitles,
     }
+
+
+_ffmpeg_probe_impl = None
+
+
+def probe_media_file_ffmpeg(probe_binary: str, path: Path):
+    """Load the optional ffmpeg fallback helper only when that backend is used."""
+    global _ffmpeg_probe_impl
+
+    if _ffmpeg_probe_impl is None:
+        helper_path = Path(__file__).resolve().with_name("ffmpeg_probe.py")
+        if not helper_path.is_file():
+            return {
+                "path": path,
+                "error": f"ffmpeg fallback helper not found: {helper_path}",
+            }
+
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "plex_tools_ffmpeg_probe",
+            helper_path,
+        )
+        if spec is None or spec.loader is None:
+            return {
+                "path": path,
+                "error": f"Could not load ffmpeg fallback helper: {helper_path}",
+            }
+
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _ffmpeg_probe_impl = module.probe_media_file_ffmpeg
+
+    return _ffmpeg_probe_impl(probe_binary, path)
 
 
 def summarize_media_version(probe_binary: str, version, probe_backend: str):
