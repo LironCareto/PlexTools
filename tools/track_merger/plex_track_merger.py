@@ -512,30 +512,44 @@ def extract_window(
 def best_window_match(
     source_fp: Fingerprint,
     target_frames: list[tuple[float, Fingerprint]],
-) -> tuple[float, float] | None:
+    ambiguity_separation: float = 2.0,
+) -> tuple[float, float, float | None] | None:
     if not target_frames:
         return None
 
-    best_time = None
-    best_distance = None
-    for timestamp, target_fp in target_frames:
-        distance = fingerprint_distance(source_fp, target_fp)
-        if best_distance is None or distance < best_distance:
-            best_distance = distance
-            best_time = timestamp
+    scored = [
+        (fingerprint_distance(source_fp, target_fp), timestamp)
+        for timestamp, target_fp in target_frames
+    ]
+    scored.sort()
 
-    if best_time is None or best_distance is None:
-        return None
-    return best_time, best_distance
+    best_distance, best_time = scored[0]
+    second_distance = None
+    for distance, timestamp in scored[1:]:
+        if abs(timestamp - best_time) >= ambiguity_separation:
+            second_distance = distance
+            break
+
+    margin = (
+        second_distance - best_distance
+        if second_distance is not None
+        else None
+    )
+    return best_time, best_distance, margin
 
 
 def anchor_times(duration: float, count: int) -> list[float]:
     if count < 3:
         count = 3
 
-    margin = min(180.0, duration * 0.08)
-    start = margin
-    end = duration - margin
+    start_margin = min(180.0, duration * 0.08)
+    # Keep global alignment anchors away from the end credits. Scrolling
+    # credit layouts are visually repetitive and can produce deceptively
+    # strong matches several seconds apart.
+    end_margin = max(600.0, duration * 0.08)
+    end_margin = min(end_margin, duration * 0.20)
+    start = start_margin
+    end = duration - end_margin
     if end <= start:
         start = duration * 0.1
         end = duration * 0.9
@@ -731,7 +745,14 @@ def coarse_alignment(
             print(f"[{index}/{len(anchors)}] source {format_duration(source_time)} -> no target frames")
             continue
 
-        target_time, distance = best
+        target_time, distance, uniqueness_margin = best
+        if uniqueness_margin is not None and uniqueness_margin < 0.025:
+            print(
+                f"[{index}/{len(anchors)}] source {format_duration(source_time)} "
+                f"-> ambiguous target match distance={distance:.3f} "
+                f"margin={uniqueness_margin:.3f}"
+            )
+            continue
         if distance > 0.24:
             print(
                 f"[{index}/{len(anchors)}] source {format_duration(source_time)} "
@@ -810,7 +831,14 @@ def refined_alignment(
             print(f"[{index}/{len(anchors)}] source {format_duration(source_time)} -> no target frames")
             continue
 
-        target_time, distance = best
+        target_time, distance, uniqueness_margin = best
+        if uniqueness_margin is not None and uniqueness_margin < 0.015:
+            print(
+                f"[{index}/{len(anchors)}] source {format_duration(source_time)} "
+                f"-> ambiguous target match distance={distance:.3f} "
+                f"margin={uniqueness_margin:.3f}"
+            )
+            continue
         # The refined search is only +/- 3 seconds around a model prediction,
         # so it can safely tolerate a much weaker perceptual match than the
         # wide coarse search. Residual validation below still rejects temporal
@@ -905,7 +933,14 @@ def tail_discontinuity_scan(
             )
             continue
 
-        target_time, distance = best
+        target_time, distance, uniqueness_margin = best
+        if uniqueness_margin is not None and uniqueness_margin < 0.015:
+            print(
+                f"[{index}/{len(requested_times)}] "
+                f"source {format_duration(source_time)} -> ambiguous target match "
+                f"distance={distance:.3f} margin={uniqueness_margin:.3f}"
+            )
+            continue
         if distance > 0.45:
             print(
                 f"[{index}/{len(requested_times)}] "
