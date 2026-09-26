@@ -24,11 +24,6 @@ THUMB_WIDTH = 32
 THUMB_HEIGHT = 18
 THUMB_BYTES = THUMB_WIDTH * THUMB_HEIGHT
 
-CREDIT_WIDTH = 128
-CREDIT_HEIGHT = 72
-CREDIT_BYTES = CREDIT_WIDTH * CREDIT_HEIGHT * 3
-CREDIT_SAMPLE_INTERVAL = 2.0
-
 
 @dataclass(frozen=True)
 class Fingerprint:
@@ -467,173 +462,6 @@ def extract_useful_anchor(
     return None
 
 
-def credit_frame_stats(
-    frame: bytes,
-) -> tuple[float, float, float, float, float, float]:
-    if len(frame) != CREDIT_BYTES:
-        raise ValueError("Invalid credit-detection frame size")
-
-    pixels = [
-        frame[index : index + 3]
-        for index in range(0, len(frame), 3)
-    ]
-    total = len(pixels)
-
-    dark_mask = []
-    text_mask = []
-    colorful_mask = []
-
-    for red, green, blue in pixels:
-        high = max(red, green, blue)
-        low = min(red, green, blue)
-        spread = high - low
-
-        dark = high <= 45
-        # White/grey credit text should remain nearly neutral in RGB even
-        # after scaling. This rejects dark but colourful movie scenes.
-        neutral_bright = low >= 120 and spread <= 32
-        colorful = high >= 70 and spread >= 48
-
-        dark_mask.append(dark)
-        text_mask.append(neutral_bright)
-        colorful_mask.append(colorful)
-
-    dark = sum(dark_mask)
-    bright = sum(text_mask)
-    colorful = sum(colorful_mask)
-
-    bright_rows = 0
-    for y in range(CREDIT_HEIGHT):
-        start = y * CREDIT_WIDTH
-        end = start + CREDIT_WIDTH
-        if sum(text_mask[start:end]) >= 2:
-            bright_rows += 1
-
-    bright_columns = 0
-    for x in range(CREDIT_WIDTH):
-        count = sum(
-            1
-            for y in range(CREDIT_HEIGHT)
-            if text_mask[(y * CREDIT_WIDTH) + x]
-        )
-        if count >= 2:
-            bright_columns += 1
-
-    non_dark = max(1, total - dark)
-    neutral_share = bright / non_dark
-
-    return (
-        dark / total,
-        bright / total,
-        colorful / total,
-        neutral_share,
-        bright_rows / CREDIT_HEIGHT,
-        bright_columns / CREDIT_WIDTH,
-    )
-
-
-def credit_like_frame(frame: bytes) -> bool:
-    (
-        dark,
-        bright,
-        colorful,
-        neutral_share,
-        bright_rows,
-        bright_columns,
-    ) = credit_frame_stats(frame)
-
-    return (
-        dark >= 0.58
-        and 0.004 <= bright <= 0.32
-        and colorful <= 0.08
-        and neutral_share >= 0.20
-        and bright_rows >= 0.10
-        and bright_columns >= 0.12
-    )
-
-
-def detect_end_credits(
-    ffmpeg: str,
-    path: Path,
-    duration: float,
-) -> tuple[float | None, float]:
-    lookback = min(1800.0, duration * 0.30)
-    start = max(0.0, duration - lookback)
-    rate = 1.0 / CREDIT_SAMPLE_INTERVAL
-
-    command = [
-        ffmpeg,
-        "-nostdin",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-ss",
-        f"{start:.6f}",
-        "-i",
-        str(path),
-        "-map",
-        "0:v:0",
-        "-t",
-        f"{lookback:.6f}",
-        "-vf",
-        f"fps={rate:.8f},scale={CREDIT_WIDTH}:{CREDIT_HEIGHT}:flags=area,format=rgb24",
-        "-an",
-        "-sn",
-        "-dn",
-        "-f",
-        "rawvideo",
-        "-pix_fmt",
-        "rgb24",
-        "pipe:1",
-    ]
-    raw = run_ffmpeg_raw(command, f"detecting end credits in {path}")
-    frame_count = len(raw) // CREDIT_BYTES
-    if frame_count < 30:
-        return None, 0.0
-
-    samples: list[tuple[float, bool]] = []
-    for index in range(frame_count):
-        frame = raw[index * CREDIT_BYTES : (index + 1) * CREDIT_BYTES]
-        timestamp = start + (index * CREDIT_SAMPLE_INTERVAL)
-        samples.append((timestamp, credit_like_frame(frame)))
-
-    window_samples = max(20, round(60.0 / CREDIT_SAMPLE_INTERVAL))
-    best_start = None
-    best_ratio = 0.0
-
-    for index in range(0, len(samples) - window_samples + 1):
-        window = samples[index : index + window_samples]
-        ratio = sum(1 for _, is_credit in window if is_credit) / len(window)
-        if ratio < 0.72:
-            continue
-
-        tail = samples[index:]
-        tail_ratio = sum(1 for _, is_credit in tail if is_credit) / len(tail)
-        if tail_ratio < 0.35:
-            continue
-
-        best_start = index
-        best_ratio = ratio
-        break
-
-    if best_start is None:
-        return None, 0.0
-
-    backtrack_limit = max(0, best_start - round(90.0 / CREDIT_SAMPLE_INTERVAL))
-    first = best_start
-    gap = 0
-    for index in range(best_start - 1, backtrack_limit - 1, -1):
-        if samples[index][1]:
-            first = index
-            gap = 0
-        else:
-            gap += 1
-            if gap > round(12.0 / CREDIT_SAMPLE_INTERVAL):
-                break
-
-    return samples[first][0], best_ratio
-
-
 def extract_window(
     ffmpeg: str,
     path: Path,
@@ -710,6 +538,13 @@ def best_window_match(
     return best_time, best_distance, margin
 
 
+def conservative_alignment_end(duration: float) -> float:
+    """Return the end of the high-trust region used to fit the global model."""
+    end_margin = max(600.0, duration * 0.08)
+    end_margin = min(end_margin, duration * 0.20)
+    return max(0.0, duration - end_margin)
+
+
 def anchor_times(
     duration: float,
     count: int,
@@ -720,13 +555,12 @@ def anchor_times(
 
     start_margin = min(180.0, duration * 0.08)
     start = start_margin
+    end = (
+        min(duration, content_end)
+        if content_end is not None
+        else conservative_alignment_end(duration)
+    )
 
-    if content_end is not None:
-        end = min(duration, content_end) - 60.0
-    else:
-        end_margin = max(600.0, duration * 0.08)
-        end_margin = min(end_margin, duration * 0.20)
-        end = duration - end_margin
     if end <= start:
         start = duration * 0.1
         end = duration * 0.9
@@ -1267,74 +1101,19 @@ def perform_visual_alignment(
         if source_duration is None or target_duration is None:
             raise ValueError("Both media files need known durations for visual alignment")
 
+        trusted_end = conservative_alignment_end(source_duration)
+
         print()
-        print("End credits detection")
-        print("=====================")
-        source_credits, source_credit_confidence = detect_end_credits(
-            ffmpeg,
-            source["path"],
-            source_duration,
+        print("Alignment sampling window")
+        print("=========================")
+        print(f"Primary fit source end : {format_duration(trusted_end)}")
+        print(
+            "Tail policy            : excluded from model fit; "
+            "checked separately for unique visual matches"
         )
-        target_credits, target_credit_confidence = detect_end_credits(
-            ffmpeg,
-            target["path"],
-            target_duration,
-        )
-
-        inferred_source_credits = None
-        inferred_target_credits = None
-
-        slope_guess = initial_slope(source, target)
-        intercept_guess = (
-            target_duration - (slope_guess * source_duration)
-        ) / 2.0
-
-        if source_credits is None and target_credits is not None:
-            inferred_source_credits = (
-                target_credits - intercept_guess
-            ) / slope_guess
-            if not 0.0 < inferred_source_credits < source_duration:
-                inferred_source_credits = None
-
-        if target_credits is None and source_credits is not None:
-            inferred_target_credits = (
-                slope_guess * source_credits
-            ) + intercept_guess
-            if not 0.0 < inferred_target_credits < target_duration:
-                inferred_target_credits = None
-
-        if source_credits is None:
-            if inferred_source_credits is None:
-                print("Source credits start  : not detected")
-            else:
-                print(
-                    f"Source credits start  : {format_duration(inferred_source_credits)} "
-                    "(inferred from target)"
-                )
-        else:
-            print(
-                f"Source credits start  : {format_duration(source_credits)} "
-                f"(visual confidence {source_credit_confidence:.0%})"
-            )
-
-        if target_credits is None:
-            if inferred_target_credits is None:
-                print("Target credits start  : not detected")
-            else:
-                print(
-                    f"Target credits start  : {format_duration(inferred_target_credits)} "
-                    "(inferred from source)"
-                )
-        else:
-            print(
-                f"Target credits start  : {format_duration(target_credits)} "
-                f"(visual confidence {target_credit_confidence:.0%})"
-            )
-
-        source_content_end = (
-            source_credits
-            if source_credits is not None
-            else inferred_source_credits
+        print(
+            "Reason                 : end credits and other tail material are "
+            "not identified semantically"
         )
 
         coarse_model, _ = coarse_alignment(
@@ -1343,7 +1122,7 @@ def perform_visual_alignment(
             target,
             count=coarse_anchors,
             window_radius=search_radius,
-            source_content_end=source_content_end,
+            source_content_end=trusted_end,
         )
         refined_model, refined_candidates = refined_alignment(
             ffmpeg,
@@ -1351,14 +1130,14 @@ def perform_visual_alignment(
             target,
             coarse_model,
             count=validation_anchors,
-            source_content_end=source_content_end,
+            source_content_end=trusted_end,
         )
         tail_discontinuity_scan(
             ffmpeg,
             source,
             target,
             refined_model,
-            source_content_end=source_content_end,
+            source_content_end=None,
         )
     except ValueError as exc:
         print()
