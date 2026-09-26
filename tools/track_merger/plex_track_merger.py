@@ -1648,6 +1648,8 @@ def transplant_audio(
     audio_bitrate: str | None,
     language: str | None,
     title: str | None,
+    target_language: str | None,
+    target_title: str | None,
 ) -> None:
     if alignment_status(model, refined_candidates, tail_results) != (
         "CONSISTENT GLOBAL AFFINE ALIGNMENT"
@@ -1733,6 +1735,18 @@ def transplant_audio(
         "0",
     ]
 
+    if target_language:
+        command.extend(
+            ["-metadata:s:a:0", f"language={target_language}"]
+        )
+    if target_title:
+        command.extend(
+            ["-metadata:s:a:0", f"title={target_title}"]
+        )
+        command.extend(
+            ["-metadata:s:a:0", f"handler_name={target_title}"]
+        )
+
     if language:
         command.extend(
             [f"-metadata:s:a:{new_audio_index}", f"language={language}"]
@@ -1740,6 +1754,9 @@ def transplant_audio(
     if title:
         command.extend(
             [f"-metadata:s:a:{new_audio_index}", f"title={title}"]
+        )
+        command.extend(
+            [f"-metadata:s:a:{new_audio_index}", f"handler_name={title}"]
         )
 
     command.extend(
@@ -1796,8 +1813,8 @@ def build_parser() -> argparse.ArgumentParser:
   Analyze visual timeline alignment without writing:
     /bin/python3 tools/track_merger/plex_track_merger.py --align SOURCE TARGET
 
-  Transplant source audio stream 1 after validated alignment:
-    /bin/python3 tools/track_merger/plex_track_merger.py --merge --source-audio 1 --language spa --title "Spanish" --output OUTPUT SOURCE TARGET
+  Transplant source audio stream 1 and label both output audio tracks:
+    /bin/python3 tools/track_merger/plex_track_merger.py --merge --source-audio 1 --target-language eng --target-title "English" --language spa --title "Spanish" --output OUTPUT SOURCE TARGET
 
   Override output audio encoding:
     /bin/python3 tools/track_merger/plex_track_merger.py --merge --source-audio 1 --audio-codec aac --audio-bitrate 512k --output OUTPUT SOURCE TARGET
@@ -1884,6 +1901,21 @@ Notes:
         "--title",
         help="Optional title metadata for the transplanted audio track.",
     )
+    transplant_group.add_argument(
+        "--target-language",
+        metavar="CODE",
+        help=(
+            "Optional language metadata for the target's first audio track, "
+            "e.g. eng or ita."
+        ),
+    )
+    transplant_group.add_argument(
+        "--target-title",
+        help=(
+            "Optional title/handler metadata for the target's first audio "
+            "track, e.g. English or Italian."
+        ),
+    )
 
     alignment_group = parser.add_argument_group("Alignment tuning")
     alignment_group.add_argument(
@@ -1928,9 +1960,15 @@ def main() -> int:
     if args.merge and args.output is None:
         print("[FATAL] --merge requires --output", file=sys.stderr)
         return 2
-    if not args.merge and (args.source_audio is not None or args.output is not None):
+    if not args.merge and (
+        args.source_audio is not None
+        or args.output is not None
+        or args.target_language is not None
+        or args.target_title is not None
+    ):
         print(
-            "[FATAL] --source-audio and --output are only used with --merge",
+            "[FATAL] --source-audio, --output, --target-language and "
+            "--target-title are only used with --merge",
             file=sys.stderr,
         )
         return 2
@@ -1998,6 +2036,8 @@ def main() -> int:
             args.audio_bitrate,
             args.language,
             args.title,
+            args.target_language,
+            args.target_title,
         )
     except ValueError as exc:
         print()
