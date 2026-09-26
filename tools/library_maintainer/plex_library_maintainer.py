@@ -3079,40 +3079,80 @@ def validate_plans(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Normalize movie folders and organize root-level movie files from Plex metadata. "
-            "Dry-run is the default."
-        )
+            "Conservative Plex movie-library maintenance and duplicate analysis. "
+            "Read-only/dry-run behavior is the default."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples (run from the PlexTools repository root):
+
+  List Plex libraries:
+    /bin/python3 tools/library_maintainer/plex_library_maintainer.py --list-libraries
+
+  Preview normal folder/file maintenance (M1/M2):
+    /bin/python3 tools/library_maintainer/plex_library_maintainer.py
+
+  Apply normal folder/file maintenance (M1/M2):
+    /bin/python3 tools/library_maintainer/plex_library_maintainer.py --write
+
+  Inspect duplicate Plex movie versions (M4, read-only):
+    /bin/python3 tools/library_maintainer/plex_library_maintainer.py --report duplicates
+
+  Analyze duplicate versions technically with ffprobe/ffmpeg (M4, read-only):
+    /bin/python3 tools/library_maintainer/plex_library_maintainer.py --report duplicates --probe-media
+
+  Export the technical duplicate analysis to TSV (M4, read-only):
+    /bin/python3 tools/library_maintainer/plex_library_maintainer.py --report duplicates --probe-media --tsv duplicates.tsv
+
+  Analyze folder collisions (M3a, read-only):
+    /bin/python3 tools/library_maintainer/plex_library_maintainer.py --analyze-collisions
+
+  Plan conservative collision merges (M3b, read-only):
+    /bin/python3 tools/library_maintainer/plex_library_maintainer.py --plan-collisions
+
+  Preview all collision groups that are safe to merge:
+    /bin/python3 tools/library_maintainer/plex_library_maintainer.py --merge-ready-collisions
+
+  Execute all collision groups that pass the safety preflight:
+    /bin/python3 tools/library_maintainer/plex_library_maintainer.py --merge-ready-collisions --write
+
+Notes:
+  - M4 duplicate reports are always read-only and reject --write.
+  - --probe-media requires --report duplicates.
+  - --tsv FILE requires --report duplicates.
+  - --library may be repeated and overrides libraries configured in config.json.
+""",
     )
-    parser.add_argument(
+
+    config_group = parser.add_argument_group("Configuration and selection")
+    config_group.add_argument(
         "--config",
         type=Path,
         default=DEFAULT_CONFIG,
-        help="Shared PlexTools JSON configuration file. Defaults to the repository-root config.json.",
+        help=(
+            "Shared PlexTools JSON configuration file. Defaults to the "
+            "repository-root config.json."
+        ),
     )
-    parser.add_argument(
+    config_group.add_argument(
         "-d",
         "--database-folder",
         type=Path,
         help=(
-            "Plex 'Plug-in Support/Databases' directory. Overrides database_folder "
-            "from config.json."
+            "Plex 'Plug-in Support/Databases' directory. Overrides "
+            "plex.database_folder from config.json."
         ),
     )
-    parser.add_argument(
+    config_group.add_argument(
         "--library",
         action="append",
         default=[],
+        metavar="NAME_OR_ID",
         help=(
             "Exact Plex library name or numeric library ID. May be repeated. "
             "Command-line values replace configured libraries."
         ),
     )
-    parser.add_argument(
-        "--list-libraries",
-        action="store_true",
-        help="List Plex libraries and exit without changing anything.",
-    )
-    parser.add_argument(
+    config_group.add_argument(
         "--path-map",
         action="append",
         default=[],
@@ -3123,78 +3163,94 @@ def build_parser() -> argparse.ArgumentParser:
             "May be repeated. Command-line mappings replace config mappings."
         ),
     )
-    parser.add_argument(
+    config_group.add_argument(
+        "--list-libraries",
+        action="store_true",
+        help="List Plex libraries and exit without changing anything.",
+    )
+
+    collision_group = parser.add_argument_group("M3 - Folder collision handling")
+    collision_group.add_argument(
         "--analyze-collisions",
         action="store_true",
         help=(
-            "M3a diagnostic: inventory every multi-folder collision in detail. "
-            "This mode is read-only and cannot be combined with --write."
+            "M3a read-only diagnostic: inventory every multi-folder collision "
+            "in detail."
         ),
     )
-    parser.add_argument(
+    collision_group.add_argument(
         "--plan-collisions",
         action="store_true",
         help=(
-            "M3b diagnostic: produce exact conservative merge move plans. "
-            "This mode never executes those moves and cannot be combined with --write."
+            "M3b read-only diagnostic: produce exact conservative merge move "
+            "plans without executing them."
         ),
     )
-    parser.add_argument(
+    collision_group.add_argument(
         "--merge-collision",
         metavar="CANONICAL_FOLDER",
         help=(
-            "M3c: execute exactly one collision group selected by canonical folder "
-            "name or full path. Requires --write; M1/M2 writes are disabled."
+            "M3c: execute exactly one collision group selected by canonical "
+            "folder name or full path. Requires --write."
         ),
     )
-    parser.add_argument(
+    collision_group.add_argument(
         "--merge-ready-collisions",
         action="store_true",
         help=(
-            "M3 batch mode: preflight every collision and select only groups that pass "
-            "all M3 write guardrails. Dry-run by default; add --write to execute them. "
-            "Rejected groups are skipped and M1/M2 writes are disabled."
+            "Preflight every collision and select only groups that pass all M3 "
+            "write guardrails. Dry-run by default; add --write to execute."
         ),
     )
-    parser.add_argument(
+    collision_group.add_argument(
         "--accept-title-mismatch",
         action="store_true",
         help=(
-            "For one explicit --merge-collision only, accept a title/language mismatch "
-            "that the automatic identity guardrail rejects. Explicit source/Plex year "
-            "conflicts remain blocked."
+            "With one explicit --merge-collision, allow a title/language "
+            "mismatch rejected by the automatic identity guardrail. Explicit "
+            "source/Plex year conflicts remain blocked."
         ),
     )
-    parser.add_argument(
+
+    duplicate_group = parser.add_argument_group(
+        "M4 - Duplicate media-version analysis (read-only)"
+    )
+    duplicate_group.add_argument(
         "--report",
         choices=("duplicates",),
+        metavar="{duplicates}",
         help=(
-            "Read-only M4 report. 'duplicates' lists Plex movie items that contain "
+            "Run an M4 report. 'duplicates' lists Plex movie items containing "
             "multiple media versions."
         ),
     )
-    parser.add_argument(
+    duplicate_group.add_argument(
         "--probe-media",
         action="store_true",
         help=(
-            "With --report duplicates, inspect each duplicate version with ffprobe "
-            "or fall back to ffmpeg, then classify duration clusters and conservative "
-            "technical dominance."
+            "With --report duplicates, inspect every duplicate version with "
+            "ffprobe (or ffmpeg fallback), compare technical properties and "
+            "classify duration clusters/dominance."
         ),
     )
-    parser.add_argument(
+    duplicate_group.add_argument(
         "--tsv",
         type=Path,
         metavar="FILE",
         help=(
-            "With --report duplicates, write one Google-Sheets-friendly TSV row per "
-            "media version. Detailed per-movie console output is suppressed."
+            "With --report duplicates, write one TSV row per media version. "
+            "Use together with --probe-media for the full technical export."
         ),
     )
-    parser.add_argument(
+
+    write_group = parser.add_argument_group("Write control")
+    write_group.add_argument(
         "--write",
         action="store_true",
-        help="Actually apply the selected write operation. Without this flag nothing is changed.",
+        help=(
+            "Actually apply the selected M1/M2/M3 write operation. Without "
+            "this flag, filesystem-changing modes are dry-run. M4 rejects it."
+        ),
     )
     return parser
 
