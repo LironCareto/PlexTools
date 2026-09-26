@@ -763,6 +763,55 @@ def fit_robust_model(
             for match in best_inliers
         ]
 
+    # When both videos expose stable frame rates, an exact frame-rate ratio is
+    # often a stronger estimate of PAL/NTSC-style speed conversion than a free
+    # regression over a handful of compressed visual matches. A tiny slope
+    # error accumulates into seconds over a feature-length film, so test a
+    # fixed-slope model and prefer it when it explains at least as many inliers
+    # with acceptable residuals.
+    if expected_slope is not None and abs(slope - expected_slope) <= 0.001:
+        fixed_intercept = median(
+            [
+                match.target_time - (expected_slope * match.source_time)
+                for match in matches
+            ]
+        )
+        fixed_inliers = [
+            match
+            for match in matches
+            if abs(
+                match.target_time
+                - ((expected_slope * match.source_time) + fixed_intercept)
+            ) <= residual_limit
+        ]
+
+        if len(fixed_inliers) >= minimum_inliers:
+            fixed_intercept = median(
+                [
+                    match.target_time - (expected_slope * match.source_time)
+                    for match in fixed_inliers
+                ]
+            )
+            fixed_residuals = [
+                match.target_time
+                - ((expected_slope * match.source_time) + fixed_intercept)
+                for match in fixed_inliers
+            ]
+
+            free_median = median([abs(value) for value in residuals])
+            fixed_median = median([abs(value) for value in fixed_residuals])
+            if (
+                len(fixed_inliers) > len(best_inliers)
+                or (
+                    len(fixed_inliers) == len(best_inliers)
+                    and fixed_median <= max(free_median + 0.15, 0.20)
+                )
+            ):
+                slope = expected_slope
+                intercept = fixed_intercept
+                best_inliers = fixed_inliers
+                residuals = fixed_residuals
+
     return AlignmentModel(
         slope=slope,
         intercept=intercept,
