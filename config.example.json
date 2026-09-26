@@ -13,7 +13,12 @@
     "library_maintainer": {
       "libraries": [
         "Movies"
-      ]
+      ],
+      "google_sheets": {
+        "credentials_file": "/path/to/google-service-account.json",
+        "spreadsheet_id": "YOUR_GOOGLE_SHEET_ID",
+        "worksheet": "duplicates"
+      }
     },
     "subs_extractor": {},
     "track_merger": {}
