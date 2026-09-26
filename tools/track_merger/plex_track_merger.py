@@ -1288,6 +1288,153 @@ def validate_transplant_output(
     return output
 
 
+def transplant_audio(
+    ffmpeg: str,
+    ffprobe: str,
+    source: dict,
+    target: dict,
+    model: AlignmentModel,
+    refined_candidates: list[Match],
+    tail_results: list[tuple[Match, float]],
+    stream_index: int,
+    output_path: Path,
+    audio_codec: str,
+    audio_bitrate: str | None,
+    language: str | None,
+    title: str | None,
+) -> None:
+    if alignment_status(model, refined_candidates) != (
+        "CONSISTENT GLOBAL AFFINE ALIGNMENT"
+    ):
+        raise ValueError(
+            "Refusing to write: alignment is not consistently validated"
+        )
+
+    if any(abs(residual) >= 1.5 for _, residual in tail_results):
+        raise ValueError(
+            "Refusing to write: the tail scan found a timeline discontinuity"
+        )
+
+    selected = source_audio_stream(source, stream_index)
+    output_path = output_path.expanduser()
+
+    if output_path.exists():
+        raise ValueError(f"Refusing to overwrite existing output: {output_path}")
+    if output_path.resolve() in {
+        source["path"].resolve(),
+        target["path"].resolve(),
+    }:
+        raise ValueError("Output path must be different from both input files")
+    if not output_path.parent.is_dir():
+        raise ValueError(f"Output directory does not exist: {output_path.parent}")
+
+    temporary = output_path.with_name(
+        f"{output_path.stem}.partial-{os.getpid()}{output_path.suffix}"
+    )
+    if temporary.exists():
+        raise ValueError(f"Temporary output already exists: {temporary}")
+
+    target_duration = media_duration(target)
+    if target_duration is None:
+        raise ValueError("Target duration is required for transplantation")
+
+    target_audio_count = sum(
+        1
+        for stream in target["streams"]
+        if stream.get("codec_type") == "audio"
+    )
+    new_audio_index = target_audio_count
+    bitrate = audio_bitrate or default_audio_bitrate(selected)
+    filter_graph, tempo = audio_filter_for_alignment(stream_index, model)
+
+    print()
+    print("Audio transplant")
+    print("================")
+    print(f"Source stream        : {stream_index}")
+    print(f"Tempo factor         : {tempo:.12f}")
+    print(f"Timeline offset      : {model.intercept:+.6f} s")
+    print(f"Audio codec          : {audio_codec}")
+    print(f"Audio bitrate        : {bitrate}")
+    print(f"Output               : {output_path}")
+    print("Originals            : untouched")
+    print()
+
+    command = [
+        ffmpeg,
+        "-nostdin",
+        "-hide_banner",
+        "-i",
+        str(target["path"]),
+        "-i",
+        str(source["path"]),
+        "-filter_complex",
+        filter_graph,
+        "-map",
+        "0",
+        "-map",
+        "[transplanted_audio]",
+        "-map_metadata",
+        "0",
+        "-map_chapters",
+        "0",
+        "-c",
+        "copy",
+        f"-c:a:{new_audio_index}",
+        audio_codec,
+        f"-b:a:{new_audio_index}",
+        bitrate,
+        f"-disposition:a:{new_audio_index}",
+        "0",
+    ]
+
+    if language:
+        command.extend(
+            [f"-metadata:s:a:{new_audio_index}", f"language={language}"]
+        )
+    if title:
+        command.extend(
+            [f"-metadata:s:a:{new_audio_index}", f"title={title}"]
+        )
+
+    command.extend(
+        [
+            "-t",
+            f"{target_duration:.6f}",
+            "-n",
+            str(temporary),
+        ]
+    )
+
+    result = subprocess.run(command, check=False)
+    if result.returncode != 0:
+        if temporary.exists():
+            temporary.unlink()
+        raise ValueError(
+            f"ffmpeg transplant failed with exit code {result.returncode}"
+        )
+
+    try:
+        validate_transplant_output(
+            ffprobe,
+            temporary,
+            target,
+            selected,
+        )
+        temporary.rename(output_path)
+    except Exception:
+        if temporary.exists():
+            temporary.unlink()
+        raise
+
+    print()
+    print("Transplant complete")
+    print("===================")
+    print(f"Created              : {output_path}")
+    print("Validation           : passed")
+    print("Target streams       : preserved by stream copy")
+    print("Added audio          : decoded, retimed, re-encoded")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
