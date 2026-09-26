@@ -1183,6 +1183,111 @@ def perform_visual_alignment(
     return 0
 
 
+def source_audio_stream(probe: dict, stream_index: int) -> dict:
+    for stream in probe["streams"]:
+        if stream.get("index") == stream_index:
+            if stream.get("codec_type") != "audio":
+                raise ValueError(
+                    f"Source stream {stream_index} is not an audio stream"
+                )
+            return stream
+    raise ValueError(f"Source audio stream {stream_index} does not exist")
+
+
+def default_audio_bitrate(stream: dict) -> str:
+    channels = int(stream.get("channels") or 2)
+    if channels <= 2:
+        return "256k"
+    if channels <= 6:
+        return "512k"
+    return "768k"
+
+
+def audio_filter_for_alignment(
+    stream_index: int,
+    model: AlignmentModel,
+) -> tuple[str, float]:
+    tempo = 1.0 / model.slope
+    filters = [
+        f"[1:{stream_index}]",
+        "asetpts=PTS-STARTPTS",
+        f"atempo={tempo:.12f}",
+    ]
+
+    if model.intercept >= 0:
+        delay_ms = round(model.intercept * 1000.0)
+        filters.append(f"adelay={delay_ms}:all=1")
+    else:
+        filters.append(f"atrim=start={-model.intercept:.6f}")
+        filters.append("asetpts=PTS-STARTPTS")
+
+    return ",".join(filters) + "[transplanted_audio]", tempo
+
+
+def validate_transplant_output(
+    ffprobe: str,
+    output_path: Path,
+    target: dict,
+    source_audio: dict,
+) -> dict:
+    output = probe_media(ffprobe, output_path)
+
+    def count_streams(probe: dict, kind: str) -> int:
+        return sum(
+            1
+            for stream in probe["streams"]
+            if stream.get("codec_type") == kind
+        )
+
+    for kind in ("video", "subtitle"):
+        expected = count_streams(target, kind)
+        actual = count_streams(output, kind)
+        if actual != expected:
+            raise ValueError(
+                f"Output validation failed: expected {expected} {kind} "
+                f"stream(s), found {actual}"
+            )
+
+    target_audio_count = count_streams(target, "audio")
+    output_audios = [
+        stream
+        for stream in output["streams"]
+        if stream.get("codec_type") == "audio"
+    ]
+    if len(output_audios) != target_audio_count + 1:
+        raise ValueError(
+            "Output validation failed: transplanted audio stream is missing "
+            "or the target audio stream count changed"
+        )
+
+    transplanted = output_audios[-1]
+    source_channels = source_audio.get("channels")
+    output_channels = transplanted.get("channels")
+    if (
+        source_channels is not None
+        and output_channels is not None
+        and source_channels != output_channels
+    ):
+        raise ValueError(
+            "Output validation failed: transplanted audio channel count "
+            f"changed from {source_channels} to {output_channels}"
+        )
+
+    target_duration = media_duration(target)
+    output_duration = media_duration(output)
+    if (
+        target_duration is not None
+        and output_duration is not None
+        and abs(output_duration - target_duration) > 2.0
+    ):
+        raise ValueError(
+            "Output validation failed: output duration differs from target "
+            f"by {output_duration - target_duration:+.3f} s"
+        )
+
+    return output
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
