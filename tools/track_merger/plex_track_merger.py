@@ -1209,7 +1209,6 @@ def audio_filter_for_alignment(
 ) -> tuple[str, float]:
     tempo = 1.0 / model.slope
     filters = [
-        f"[1:{stream_index}]",
         "asetpts=PTS-STARTPTS",
         f"atempo={tempo:.12f}",
     ]
@@ -1221,7 +1220,8 @@ def audio_filter_for_alignment(
         filters.append(f"atrim=start={-model.intercept:.6f}")
         filters.append("asetpts=PTS-STARTPTS")
 
-    return ",".join(filters) + "[transplanted_audio]", tempo
+    graph = f"[1:{stream_index}]" + ",".join(filters)
+    return graph + "[transplanted_audio]", tempo
 
 
 def validate_transplant_output(
