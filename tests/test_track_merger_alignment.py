@@ -70,6 +70,58 @@ class AlignmentRegressionTests(unittest.TestCase):
         self.assertAlmostEqual(model.intercept, intercept, places=6)
         self.assertGreater(abs(model.slope - expected), 0.001)
 
+    def test_six_tight_refined_matches_need_tail_corroboration(self):
+        matches = [
+            module.Match(float(index * 1000), float(index * 1000), 0.10)
+            for index in range(6)
+        ]
+        model = module.AlignmentModel(
+            slope=1.0,
+            intercept=0.0,
+            matches=tuple(matches),
+            residuals=(0.05, -0.08, 0.12, -0.10, 0.18, -0.06),
+        )
+        candidates = matches + [
+            module.Match(6500.0, 6501.2, 0.30),
+            module.Match(7500.0, 7498.8, 0.30),
+        ]
+        tail = [
+            (module.Match(float(i), float(i), 0.10), residual)
+            for i, residual in enumerate(
+                (0.10, -0.20, 0.30, -0.40, 0.50, -0.60)
+            )
+        ]
+
+        self.assertEqual(
+            module.alignment_status(model, candidates, tail),
+            "CONSISTENT GLOBAL AFFINE ALIGNMENT",
+        )
+        self.assertEqual(
+            module.alignment_status(model, candidates, None),
+            "POSSIBLE GLOBAL AFFINE ALIGNMENT - REVIEW",
+        )
+
+    def test_tail_shift_blocks_consistent_status(self):
+        matches = [
+            module.Match(float(index * 1000), float(index * 1000), 0.10)
+            for index in range(7)
+        ]
+        model = module.AlignmentModel(
+            slope=1.0,
+            intercept=0.0,
+            matches=tuple(matches),
+            residuals=(0.02, -0.03, 0.04, -0.05, 0.06, -0.07, 0.08),
+        )
+        tail = [
+            (module.Match(100.0, 100.0, 0.10), 0.20),
+            (module.Match(200.0, 200.0, 0.10), 1.70),
+        ]
+
+        self.assertNotEqual(
+            module.alignment_status(model, matches, tail),
+            "CONSISTENT GLOBAL AFFINE ALIGNMENT",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
