@@ -3079,179 +3079,153 @@ def validate_plans(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Conservative Plex movie-library maintenance and duplicate analysis. "
-            "Read-only/dry-run behavior is the default."
+            "Conservative Plex movie-library maintenance. Dry-run is the default."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""Examples (run from the PlexTools repository root):
-
-  List Plex libraries:
-    /bin/python3 tools/library_maintainer/plex_library_maintainer.py --list-libraries
-
-  Preview normal folder/file maintenance (M1/M2):
-    /bin/python3 tools/library_maintainer/plex_library_maintainer.py
-
-  Apply normal folder/file maintenance (M1/M2):
-    /bin/python3 tools/library_maintainer/plex_library_maintainer.py --write
-
-  Inspect duplicate Plex movie versions (M4, read-only):
-    /bin/python3 tools/library_maintainer/plex_library_maintainer.py --report duplicates
-
-  Analyze duplicate versions technically with ffprobe/ffmpeg (M4, read-only):
-    /bin/python3 tools/library_maintainer/plex_library_maintainer.py --report duplicates --probe-media
-
-  Export the technical duplicate analysis to TSV (M4, read-only):
-    /bin/python3 tools/library_maintainer/plex_library_maintainer.py --report duplicates --probe-media --tsv duplicates.tsv
-
-  Analyze folder collisions (M3a, read-only):
-    /bin/python3 tools/library_maintainer/plex_library_maintainer.py --analyze-collisions
-
-  Plan conservative collision merges (M3b, read-only):
-    /bin/python3 tools/library_maintainer/plex_library_maintainer.py --plan-collisions
-
-  Preview all collision groups that are safe to merge:
-    /bin/python3 tools/library_maintainer/plex_library_maintainer.py --merge-ready-collisions
-
-  Execute all collision groups that pass the safety preflight:
-    /bin/python3 tools/library_maintainer/plex_library_maintainer.py --merge-ready-collisions --write
-
-Notes:
-  - M4 duplicate reports are always read-only and reject --write.
-  - --probe-media requires --report duplicates.
-  - --tsv FILE requires --report duplicates.
-  - --library may be repeated and overrides libraries configured in config.json.
-""",
+        epilog=(
+            "Common examples:\n"
+            "  List Plex libraries:\n"
+            "    %(prog)s --list-libraries\n\n"
+            "  Preview normal folder/file maintenance (M1/M2):\n"
+            "    %(prog)s\n\n"
+            "  Analyze duplicate Plex media versions (M4):\n"
+            "    %(prog)s --report duplicates --probe-media\n\n"
+            "  Export duplicate analysis to TSV:\n"
+            "    %(prog)s --report duplicates --probe-media --tsv duplicates.tsv\n\n"
+            "  Analyze folder collisions (M3):\n"
+            "    %(prog)s --analyze-collisions\n\n"
+            "  Plan collision merges without writing:\n"
+            "    %(prog)s --plan-collisions\n\n"
+            "  Preview all collision groups that are safe to merge:\n"
+            "    %(prog)s --merge-ready-collisions\n\n"
+            "  Execute safe collision merges:\n"
+            "    %(prog)s --merge-ready-collisions --write\n\n"
+            "Configuration defaults to the repository-root config.json."
+        ),
     )
 
-    config_group = parser.add_argument_group("Configuration and selection")
-    config_group.add_argument(
+    common = parser.add_argument_group("Common options")
+    common.add_argument(
         "--config",
         type=Path,
         default=DEFAULT_CONFIG,
-        help=(
-            "Shared PlexTools JSON configuration file. Defaults to the "
-            "repository-root config.json."
-        ),
+        help="Shared PlexTools JSON config. Default: repository-root config.json.",
     )
-    config_group.add_argument(
+    common.add_argument(
         "-d",
         "--database-folder",
         type=Path,
         help=(
-            "Plex 'Plug-in Support/Databases' directory. Overrides "
-            "plex.database_folder from config.json."
+            "Plex 'Plug-in Support/Databases' directory. Overrides the configured "
+            "plex.database_folder."
         ),
     )
-    config_group.add_argument(
+    common.add_argument(
         "--library",
         action="append",
         default=[],
-        metavar="NAME_OR_ID",
         help=(
-            "Exact Plex library name or numeric library ID. May be repeated. "
-            "Command-line values replace configured libraries."
+            "Exact Plex library name or numeric ID. May be repeated. Command-line "
+            "values replace tools.library_maintainer.libraries from config.json."
         ),
     )
-    config_group.add_argument(
+    common.add_argument(
+        "--list-libraries",
+        action="store_true",
+        help="List Plex libraries and exit.",
+    )
+    common.add_argument(
         "--path-map",
         action="append",
         default=[],
         type=parse_path_map,
         metavar="FROM=TO",
         help=(
-            "Map a path stored by Plex to a path visible to this machine. "
-            "May be repeated. Command-line mappings replace config mappings."
+            "Map a Plex path to a local path. May be repeated. Command-line mappings "
+            "replace plex.path_maps from config.json."
         ),
     )
-    config_group.add_argument(
-        "--list-libraries",
+
+    maintenance = parser.add_argument_group("M1/M2 - library normalization")
+    maintenance.add_argument(
+        "--write",
         action="store_true",
-        help="List Plex libraries and exit without changing anything.",
+        help=(
+            "Apply the selected write operation. Without --write, all write-capable "
+            "modes are previews only."
+        ),
     )
 
-    collision_group = parser.add_argument_group("M3 - Folder collision handling")
-    collision_group.add_argument(
+    collisions = parser.add_argument_group("M3 - folder collision handling")
+    collisions.add_argument(
         "--analyze-collisions",
         action="store_true",
         help=(
-            "M3a read-only diagnostic: inventory every multi-folder collision "
-            "in detail."
+            "Read-only inventory of every multi-folder collision, including blockers "
+            "and identity mismatches."
         ),
     )
-    collision_group.add_argument(
+    collisions.add_argument(
         "--plan-collisions",
         action="store_true",
         help=(
-            "M3b read-only diagnostic: produce exact conservative merge move "
-            "plans without executing them."
+            "Read-only exact move plan for conservative collision merges."
         ),
     )
-    collision_group.add_argument(
+    collisions.add_argument(
         "--merge-collision",
         metavar="CANONICAL_FOLDER",
         help=(
-            "M3c: execute exactly one collision group selected by canonical "
-            "folder name or full path. Requires --write."
+            "Execute one collision group selected by canonical folder name or full "
+            "path. Requires --write."
         ),
     )
-    collision_group.add_argument(
+    collisions.add_argument(
         "--merge-ready-collisions",
         action="store_true",
         help=(
-            "Preflight every collision and select only groups that pass all M3 "
-            "write guardrails. Dry-run by default; add --write to execute."
+            "Preflight all collision groups and select only those that pass every "
+            "write guardrail. Add --write to execute."
         ),
     )
-    collision_group.add_argument(
+    collisions.add_argument(
         "--accept-title-mismatch",
         action="store_true",
         help=(
-            "With one explicit --merge-collision, allow a title/language "
-            "mismatch rejected by the automatic identity guardrail. Explicit "
-            "source/Plex year conflicts remain blocked."
+            "Only with one explicit --merge-collision: allow a title/language "
+            "mismatch rejected by the automatic identity guardrail. Year conflicts "
+            "remain blocked."
         ),
     )
 
-    duplicate_group = parser.add_argument_group(
-        "M4 - Duplicate media-version analysis (read-only)"
-    )
-    duplicate_group.add_argument(
+    duplicates = parser.add_argument_group("M4 - duplicate media analysis")
+    duplicates.add_argument(
         "--report",
         choices=("duplicates",),
         metavar="{duplicates}",
         help=(
-            "Run an M4 report. 'duplicates' lists Plex movie items containing "
+            "Run a read-only report. 'duplicates' lists Plex movie items containing "
             "multiple media versions."
         ),
     )
-    duplicate_group.add_argument(
+    duplicates.add_argument(
         "--probe-media",
         action="store_true",
         help=(
-            "With --report duplicates, inspect every duplicate version with "
-            "ffprobe (or ffmpeg fallback), compare technical properties and "
-            "classify duration clusters/dominance."
+            "With --report duplicates, inspect every version with ffprobe (or ffmpeg "
+            "fallback) and compare duration, video, audio and technical dominance."
         ),
     )
-    duplicate_group.add_argument(
+    duplicates.add_argument(
         "--tsv",
         type=Path,
         metavar="FILE",
         help=(
-            "With --report duplicates, write one TSV row per media version. "
-            "Use together with --probe-media for the full technical export."
+            "With --report duplicates, export one TSV row per media version. "
+            "Example: --tsv duplicates.tsv"
         ),
     )
 
-    write_group = parser.add_argument_group("Write control")
-    write_group.add_argument(
-        "--write",
-        action="store_true",
-        help=(
-            "Actually apply the selected M1/M2/M3 write operation. Without "
-            "this flag, filesystem-changing modes are dry-run. M4 rejects it."
-        ),
-    )
     return parser
 
 
