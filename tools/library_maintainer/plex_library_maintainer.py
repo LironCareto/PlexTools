@@ -3237,9 +3237,27 @@ def print_duplicate_report(
         initialize_duplicate_tsv(tsv_path)
         print(f"TSV initialized     : {tsv_path}")
 
+    google_sheet_init_error = None
+    if google_sheet is not None:
+        try:
+            _, worksheet_name = publish_duplicate_rows_to_google_sheet(
+                [],
+                google_sheet,
+            )
+            print(
+                f"Google Sheet init   : cleared worksheet '{worksheet_name}' "
+                "and wrote current header"
+            )
+        except ValueError as exc:
+            google_sheet_init_error = str(exc)
+            print(
+                f"Google Sheet init   : ERROR - {google_sheet_init_error}",
+                file=sys.stderr,
+            )
+
     if not groups:
         print("No Plex movie items with multiple media versions were found.")
-        return 0
+        return 1 if google_sheet_init_error is not None else 0
 
     probe_errors = 0
     probe_error_details: list[str] = []
@@ -3506,13 +3524,14 @@ def print_duplicate_report(
         print()
 
     google_sheet_result = None
-    google_sheet_error = None
+    google_sheet_error = google_sheet_init_error
     if google_sheet is not None:
         try:
             google_sheet_result = publish_duplicate_rows_to_google_sheet(
                 tsv_rows,
                 google_sheet,
             )
+            google_sheet_error = None
         except ValueError as exc:
             google_sheet_error = str(exc)
 
