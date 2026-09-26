@@ -1181,6 +1181,42 @@ def tail_discontinuity_scan(
             continue
 
         target_time, distance, uniqueness_margin = best
+        residual = target_time - predicted_target
+        needs_sequence_check = (
+            (uniqueness_margin is not None and uniqueness_margin < 0.015)
+            or distance > 0.45
+            or abs(residual) > 0.50
+        )
+
+        if needs_sequence_check:
+            sequence = extract_anchor_sequence(
+                ffmpeg,
+                source["path"],
+                source_time,
+                source_duration,
+                source_fp,
+            )
+            sequence_best = best_sequence_window_match(
+                sequence,
+                target_frames,
+                model.slope,
+            )
+            if sequence_best is not None:
+                (
+                    sequence_time,
+                    sequence_distance,
+                    sequence_margin,
+                ) = sequence_best
+                sequence_unique = (
+                    sequence_margin is None
+                    or sequence_margin >= 0.008
+                )
+                if sequence_distance <= 0.38 and sequence_unique:
+                    target_time = sequence_time
+                    distance = sequence_distance
+                    uniqueness_margin = sequence_margin
+                    residual = target_time - predicted_target
+
         if uniqueness_margin is not None and uniqueness_margin < 0.015:
             print(
                 f"[{index}/{len(requested_times)}] "
@@ -1196,7 +1232,6 @@ def tail_discontinuity_scan(
             )
             continue
 
-        residual = target_time - predicted_target
         match = Match(source_time, target_time, distance)
         results.append((match, residual))
         print(
