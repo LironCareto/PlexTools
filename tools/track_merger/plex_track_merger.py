@@ -1097,6 +1097,68 @@ def print_alignment_result(
     )
 
 
+def analyze_visual_alignment(
+    ffmpeg: str,
+    source: dict,
+    target: dict,
+    coarse_anchors: int,
+    validation_anchors: int,
+    search_radius: float,
+) -> tuple[AlignmentModel, list[Match], list[tuple[Match, float]]]:
+    source_duration = media_duration(source)
+    target_duration = media_duration(target)
+    if source_duration is None or target_duration is None:
+        raise ValueError("Both media files need known durations for visual alignment")
+
+    trusted_end = conservative_alignment_end(source_duration)
+
+    print()
+    print("Alignment sampling window")
+    print("=========================")
+    print(f"Primary fit source end : {format_duration(trusted_end)}")
+    print(
+        "Tail policy            : excluded from model fit; "
+        "checked separately for unique visual matches"
+    )
+    print(
+        "Reason                 : end credits and other tail material are "
+        "not identified semantically"
+    )
+
+    coarse_model, _ = coarse_alignment(
+        ffmpeg,
+        source,
+        target,
+        count=coarse_anchors,
+        window_radius=search_radius,
+        source_content_end=trusted_end,
+    )
+    refined_model, refined_candidates = refined_alignment(
+        ffmpeg,
+        source,
+        target,
+        coarse_model,
+        count=validation_anchors,
+        source_content_end=trusted_end,
+    )
+    tail_results = tail_discontinuity_scan(
+        ffmpeg,
+        source,
+        target,
+        refined_model,
+        source_content_end=None,
+    )
+
+    print_alignment_result(
+        source,
+        target,
+        coarse_model,
+        refined_model,
+        refined_candidates,
+    )
+    return refined_model, refined_candidates, tail_results
+
+
 def perform_visual_alignment(
     ffmpeg: str,
     source: dict,
@@ -1106,61 +1168,18 @@ def perform_visual_alignment(
     search_radius: float,
 ) -> int:
     try:
-        source_duration = media_duration(source)
-        target_duration = media_duration(target)
-        if source_duration is None or target_duration is None:
-            raise ValueError("Both media files need known durations for visual alignment")
-
-        trusted_end = conservative_alignment_end(source_duration)
-
-        print()
-        print("Alignment sampling window")
-        print("=========================")
-        print(f"Primary fit source end : {format_duration(trusted_end)}")
-        print(
-            "Tail policy            : excluded from model fit; "
-            "checked separately for unique visual matches"
-        )
-        print(
-            "Reason                 : end credits and other tail material are "
-            "not identified semantically"
-        )
-
-        coarse_model, _ = coarse_alignment(
+        analyze_visual_alignment(
             ffmpeg,
             source,
             target,
-            count=coarse_anchors,
-            window_radius=search_radius,
-            source_content_end=trusted_end,
-        )
-        refined_model, refined_candidates = refined_alignment(
-            ffmpeg,
-            source,
-            target,
-            coarse_model,
-            count=validation_anchors,
-            source_content_end=trusted_end,
-        )
-        tail_discontinuity_scan(
-            ffmpeg,
-            source,
-            target,
-            refined_model,
-            source_content_end=None,
+            coarse_anchors,
+            validation_anchors,
+            search_radius,
         )
     except ValueError as exc:
         print()
         print(f"[ALIGNMENT FAILED] {exc}", file=sys.stderr)
         return 1
-
-    print_alignment_result(
-        source,
-        target,
-        coarse_model,
-        refined_model,
-        refined_candidates,
-    )
     return 0
 
 
