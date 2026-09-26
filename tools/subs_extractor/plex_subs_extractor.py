@@ -241,44 +241,50 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Extract subtitle blobs stored by Plex into sidecar files without "
             "modifying the Plex databases. Dry-run is the default."
-        )
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples (run from the PlexTools repository root):
+
+  Preview extraction without writing files:
+    /bin/python3 tools/subs_extractor/plex_subs_extractor.py
+
+  Extract all eligible subtitles:
+    /bin/python3 tools/subs_extractor/plex_subs_extractor.py --write
+
+  Extract only one language:
+    /bin/python3 tools/subs_extractor/plex_subs_extractor.py --write --language spa
+
+  Force replacement of the base subtitle filename:
+    /bin/python3 tools/subs_extractor/plex_subs_extractor.py --write --force
+
+Notes:
+  - Without --write, the command is read-only.
+  - --force only matters together with --write.
+  - --language uses the Plex language tag, for example spa, eng, es or en.
+  - Paths and database location normally come from the shared config.json.
+""",
     )
-    parser.add_argument(
+
+    config_group = parser.add_argument_group("Configuration")
+    config_group.add_argument(
         "--config",
         type=Path,
         default=DEFAULT_CONFIG,
         help=(
-            "Shared PlexTools JSON configuration file. Defaults to the repository-root "
-            "config.json."
+            "Shared PlexTools JSON configuration file. Defaults to the "
+            "repository-root config.json."
         ),
     )
-    parser.add_argument(
+    config_group.add_argument(
         "-d",
         "--database-folder",
         type=Path,
         help=(
-            "Plex 'Plug-in Support/Databases' directory. Overrides database_folder "
-            "from the config file."
+            "Plex 'Plug-in Support/Databases' directory. Overrides "
+            "plex.database_folder from config.json."
         ),
     )
-    parser.add_argument(
-        "--write",
-        action="store_true",
-        help="Actually create subtitle files. Without this flag nothing is written.",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help=(
-            "Overwrite the base subtitle filename instead of creating numbered "
-            "alternatives when a target already exists."
-        ),
-    )
-    parser.add_argument(
-        "--language",
-        help="Only process this Plex language tag, e.g. spa, eng, es or en.",
-    )
-    parser.add_argument(
+    config_group.add_argument(
         "--path-map",
         action="append",
         default=[],
@@ -286,8 +292,30 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="FROM=TO",
         help=(
             "Map a path stored by Plex to a path visible to this machine. "
-            "May be repeated. If supplied, command-line mappings replace config mappings."
+            "May be repeated. Command-line mappings replace config mappings."
         ),
+    )
+
+    extraction_group = parser.add_argument_group("Subtitle extraction")
+    extraction_group.add_argument(
+        "--language",
+        metavar="TAG",
+        help="Only process this Plex language tag, e.g. spa, eng, es or en.",
+    )
+    extraction_group.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Overwrite the base subtitle filename instead of creating numbered "
+            "alternatives when a target already exists."
+        ),
+    )
+
+    write_group = parser.add_argument_group("Write control")
+    write_group.add_argument(
+        "--write",
+        action="store_true",
+        help="Actually create subtitle files. Without this flag nothing is written.",
     )
     return parser
 
