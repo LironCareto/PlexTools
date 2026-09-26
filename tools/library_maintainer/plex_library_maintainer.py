@@ -3113,10 +3113,22 @@ def publish_duplicate_rows_to_google_sheet(
                     cols=max(26, len(DUPLICATE_TSV_FIELDNAMES)),
                 )
 
+        values = duplicate_sheet_values(rows)
+        required_rows = max(1, len(values))
+        required_cols = len(DUPLICATE_TSV_FIELDNAMES)
+        if (
+            worksheet.row_count < required_rows
+            or worksheet.col_count < required_cols
+        ):
+            worksheet.resize(
+                rows=max(worksheet.row_count, required_rows),
+                cols=max(worksheet.col_count, required_cols),
+            )
+
         worksheet.clear()
         worksheet.update(
             range_name="A1",
-            values=duplicate_sheet_values(rows),
+            values=values,
             value_input_option="RAW",
         )
     except Exception as exc:
