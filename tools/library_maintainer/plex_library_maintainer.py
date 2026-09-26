@@ -3045,6 +3045,39 @@ def google_sheet_settings(library_config: dict) -> dict[str, object]:
     }
 
 
+def initialize_duplicate_tsv(tsv_path: Path) -> None:
+    """Start a fresh duplicate TSV immediately so stale reports cannot survive."""
+    tsv_path.parent.mkdir(parents=True, exist_ok=True)
+    with tsv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=DUPLICATE_TSV_FIELDNAMES,
+            delimiter="\t",
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        handle.flush()
+
+
+def append_duplicate_tsv_rows(
+    tsv_path: Path,
+    rows: list[dict[str, object]],
+) -> None:
+    """Append completed duplicate rows and flush them to disk immediately."""
+    if not rows:
+        return
+
+    with tsv_path.open("a", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=DUPLICATE_TSV_FIELDNAMES,
+            delimiter="\t",
+            lineterminator="\n",
+        )
+        writer.writerows(rows)
+        handle.flush()
+
+
 def duplicate_sheet_values(
     rows: list[dict[str, object]],
 ) -> list[list[object]]:
@@ -3200,6 +3233,10 @@ def print_duplicate_report(
         )
     print()
 
+    if tsv_path is not None:
+        initialize_duplicate_tsv(tsv_path)
+        print(f"TSV initialized     : {tsv_path}")
+
     if not groups:
         print("No Plex movie items with multiple media versions were found.")
         return 0
@@ -3211,6 +3248,7 @@ def print_duplicate_report(
     processed_versions = 0
 
     for group_index, group in enumerate(groups, start=1):
+        group_row_start = len(tsv_rows)
         title = display_title_year(group["title"], group["year"])
         versions = [
             group["versions"][media_id]
@@ -3281,6 +3319,10 @@ def print_duplicate_report(
                 print()
             processed_versions += len(versions)
             if tsv_path is not None:
+                append_duplicate_tsv_rows(
+                    tsv_path,
+                    tsv_rows[group_row_start:],
+                )
                 print(
                     f"Progress            : {group_index}/{len(groups)} movies | "
                     f"{processed_versions}/{version_count} versions",
@@ -3428,6 +3470,10 @@ def print_duplicate_report(
 
         processed_versions += len(versions)
         if tsv_path is not None:
+            append_duplicate_tsv_rows(
+                tsv_path,
+                tsv_rows[group_row_start:],
+            )
             print(
                 f"Progress            : {group_index}/{len(groups)} movies | "
                 f"{processed_versions}/{version_count} versions",
@@ -3458,16 +3504,6 @@ def print_duplicate_report(
 
     if tsv_path is not None:
         print()
-        tsv_path.parent.mkdir(parents=True, exist_ok=True)
-        with tsv_path.open("w", encoding="utf-8", newline="") as handle:
-            writer = csv.DictWriter(
-                handle,
-                fieldnames=DUPLICATE_TSV_FIELDNAMES,
-                delimiter="\t",
-                lineterminator="\n",
-            )
-            writer.writeheader()
-            writer.writerows(tsv_rows)
 
     google_sheet_result = None
     google_sheet_error = None
