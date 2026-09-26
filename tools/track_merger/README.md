@@ -53,9 +53,11 @@ Partially implemented by the M2 validation pass. The next step is stronger disco
 
 ### M4 — Track transplant
 
-Planned.
+Implemented for audio.
 
-Extract the selected source track, apply the validated temporal transformation, and remux it into a new output file. Originals remain untouched.
+With `--merge`, the tool reruns visual alignment, requires a consistent global affine mapping, rejects detected tail discontinuities, applies pitch-preserving tempo correction plus the measured timeline offset to one explicitly selected source audio stream, and creates a new output file.
+
+All original target streams are stream-copied. Only the transplanted audio is decoded and re-encoded. Existing files are never overwritten and both inputs remain untouched.
 
 ## Configuration
 
@@ -84,6 +86,20 @@ python3 tools/track_merger/plex_track_merger.py --align \
 ```
 
 Alignment remains read-only. No track is extracted, retimed, or remuxed.
+
+To transplant one source audio track after validated alignment:
+
+```bash
+python3 tools/track_merger/plex_track_merger.py --merge \
+  --source-audio 1 \
+  --language spa \
+  --title "Spanish" \
+  --output "/path/to/new-output.mkv" \
+  "/path/to/source.mkv" \
+  "/path/to/target.mkv"
+```
+
+`--source-audio` is the absolute stream index shown in the source inventory. The output path must not already exist. The target video, existing audio, subtitles, attachments, chapters and metadata are preserved where the container permits; only the transplanted audio is retimed and re-encoded.
 
 ## License
 
