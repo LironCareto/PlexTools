@@ -537,6 +537,91 @@ def best_window_match(
     return best_time, best_distance, margin
 
 
+def extract_anchor_sequence(
+    ffmpeg: str,
+    path: Path,
+    center_time: float,
+    duration: float,
+    center_fp: Fingerprint,
+) -> list[tuple[float, Fingerprint]]:
+    samples: list[tuple[float, Fingerprint]] = [(0.0, center_fp)]
+
+    for offset in (-4.0, -2.0, 2.0, 4.0):
+        timestamp = center_time + offset
+        if not 0.0 <= timestamp < duration:
+            continue
+
+        frame = extract_frame(ffmpeg, path, timestamp)
+        if frame is None:
+            continue
+
+        fp = fingerprint(frame)
+        if fp.contrast < 8.0:
+            continue
+        samples.append((offset, fp))
+
+    samples.sort(key=lambda item: item[0])
+    return samples
+
+
+def best_sequence_window_match(
+    source_sequence: list[tuple[float, Fingerprint]],
+    target_frames: list[tuple[float, Fingerprint]],
+    slope: float,
+    ambiguity_separation: float = 2.0,
+) -> tuple[float, float, float | None] | None:
+    if len(source_sequence) < 3 or not target_frames:
+        return None
+
+    def nearest_frame(
+        timestamp: float,
+    ) -> tuple[float, Fingerprint] | None:
+        nearest = min(
+            target_frames,
+            key=lambda item: abs(item[0] - timestamp),
+        )
+        if abs(nearest[0] - timestamp) > 0.75:
+            return None
+        return nearest
+
+    scored: list[tuple[float, float]] = []
+    minimum_samples = max(3, len(source_sequence) - 1)
+
+    for candidate_time, _ in target_frames:
+        distances = []
+        for source_offset, source_fp in source_sequence:
+            desired_time = candidate_time + (source_offset * slope)
+            target_sample = nearest_frame(desired_time)
+            if target_sample is None:
+                continue
+            distances.append(
+                fingerprint_distance(source_fp, target_sample[1])
+            )
+
+        if len(distances) < minimum_samples:
+            continue
+
+        scored.append((sum(distances) / len(distances), candidate_time))
+
+    if not scored:
+        return None
+
+    scored.sort()
+    best_distance, best_time = scored[0]
+    second_distance = None
+    for distance, timestamp in scored[1:]:
+        if abs(timestamp - best_time) >= ambiguity_separation:
+            second_distance = distance
+            break
+
+    margin = (
+        second_distance - best_distance
+        if second_distance is not None
+        else None
+    )
+    return best_time, best_distance, margin
+
+
 def conservative_alignment_end(duration: float) -> float:
     """Return the end of the high-trust region used to fit the global model."""
     end_margin = max(600.0, duration * 0.08)
@@ -757,19 +842,66 @@ def coarse_alignment(
             continue
 
         target_time, distance, uniqueness_margin = best
-        if uniqueness_margin is not None and uniqueness_margin < 0.025:
-            print(
-                f"[{index}/{len(anchors)}] source {format_duration(source_time)} "
-                f"-> ambiguous target match distance={distance:.3f} "
-                f"margin={uniqueness_margin:.3f}"
+        single_frame_ambiguous = (
+            uniqueness_margin is not None
+            and uniqueness_margin < 0.025
+        )
+        single_frame_weak = distance > 0.24
+
+        if single_frame_ambiguous or single_frame_weak:
+            sequence = extract_anchor_sequence(
+                ffmpeg,
+                source["path"],
+                source_time,
+                source_duration,
+                source_fp,
             )
-            continue
-        if distance > 0.24:
-            print(
-                f"[{index}/{len(anchors)}] source {format_duration(source_time)} "
-                f"-> weak match {format_duration(target_time)} distance={distance:.3f}"
+            sequence_best = best_sequence_window_match(
+                sequence,
+                target_frames,
+                slope_guess,
             )
-            continue
+
+            if sequence_best is not None:
+                (
+                    sequence_time,
+                    sequence_distance,
+                    sequence_margin,
+                ) = sequence_best
+                sequence_unique = (
+                    sequence_margin is None
+                    or sequence_margin >= 0.012
+                )
+                if sequence_distance <= 0.30 and sequence_unique:
+                    target_time = sequence_time
+                    distance = sequence_distance
+                    uniqueness_margin = sequence_margin
+                    print(
+                        f"[{index}/{len(anchors)}] source "
+                        f"{format_duration(source_time)} -> sequence match "
+                        f"{format_duration(target_time)} "
+                        f"distance={distance:.3f} "
+                        f"margin={uniqueness_margin if uniqueness_margin is not None else float('nan'):.3f}"
+                    )
+                else:
+                    sequence_best = None
+
+            if sequence_best is None:
+                if single_frame_ambiguous:
+                    print(
+                        f"[{index}/{len(anchors)}] source "
+                        f"{format_duration(source_time)} "
+                        f"-> ambiguous target match distance={distance:.3f} "
+                        f"margin={uniqueness_margin:.3f}"
+                    )
+                else:
+                    print(
+                        f"[{index}/{len(anchors)}] source "
+                        f"{format_duration(source_time)} "
+                        f"-> weak match {format_duration(target_time)} "
+                        f"distance={distance:.3f}"
+                    )
+                continue
 
         match = Match(source_time, target_time, distance)
         matches.append(match)
