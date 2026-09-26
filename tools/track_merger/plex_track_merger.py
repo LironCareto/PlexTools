@@ -1299,6 +1299,31 @@ def alignment_status(
     return "ALIGNMENT NOT RELIABLE"
 
 
+def alignment_quality(
+    model: AlignmentModel,
+    candidates: list[Match],
+) -> tuple[int, float, int, float, float]:
+    status = alignment_status(model, candidates)
+    rank = {
+        "ALIGNMENT NOT RELIABLE": 0,
+        "POSSIBLE GLOBAL AFFINE ALIGNMENT - REVIEW": 1,
+        "CONSISTENT GLOBAL AFFINE ALIGNMENT": 2,
+    }[status]
+    residuals = [abs(value) for value in model.residuals]
+    inlier_ratio = (
+        len(model.matches) / len(candidates)
+        if candidates
+        else 0.0
+    )
+    return (
+        rank,
+        inlier_ratio,
+        len(model.matches),
+        -median(residuals),
+        -max(residuals) if residuals else float("-inf"),
+    )
+
+
 def print_alignment_result(
     source: dict,
     target: dict,
@@ -1396,6 +1421,44 @@ def analyze_visual_alignment(
         count=validation_anchors,
         source_content_end=trusted_end,
     )
+
+    # Do not lower confidence thresholds just because a legacy encode yields a
+    # sparse or noisy first validation pass. Instead gather more independent
+    # evidence. Clean cases (such as a high-quality master pair) pay no extra
+    # cost because they already finish as CONSISTENT on the normal pass.
+    if alignment_status(refined_model, refined_candidates) != (
+        "CONSISTENT GLOBAL AFFINE ALIGNMENT"
+    ):
+        dense_count = max(21, (validation_anchors * 2) - 1)
+        print()
+        print("Additional dense validation")
+        print("===========================")
+        print(
+            "Reason                 : initial refined pass was not decisive"
+        )
+        print(f"Distributed anchors    : {dense_count}")
+
+        dense_model, dense_candidates = refined_alignment(
+            ffmpeg,
+            source,
+            target,
+            coarse_model,
+            count=dense_count,
+            source_content_end=trusted_end,
+        )
+        if alignment_quality(
+            dense_model,
+            dense_candidates,
+        ) > alignment_quality(
+            refined_model,
+            refined_candidates,
+        ):
+            refined_model = dense_model
+            refined_candidates = dense_candidates
+            print("Dense validation       : selected")
+        else:
+            print("Dense validation       : original refined model retained")
+
     tail_results = tail_discontinuity_scan(
         ffmpeg,
         source,
