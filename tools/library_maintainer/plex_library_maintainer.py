@@ -2803,11 +2803,20 @@ def publish_duplicate_rows_to_google_sheet(
         try:
             worksheet = spreadsheet.worksheet(worksheet_name)
         except gspread.WorksheetNotFound:
-            worksheet = spreadsheet.add_worksheet(
-                title=worksheet_name,
-                rows=max(100, len(rows) + 10),
-                cols=max(26, len(DUPLICATE_TSV_FIELDNAMES)),
+            worksheet = next(
+                (
+                    candidate
+                    for candidate in spreadsheet.worksheets()
+                    if candidate.title.casefold() == worksheet_name.casefold()
+                ),
+                None,
             )
+            if worksheet is None:
+                worksheet = spreadsheet.add_worksheet(
+                    title=worksheet_name,
+                    rows=max(100, len(rows) + 10),
+                    cols=max(26, len(DUPLICATE_TSV_FIELDNAMES)),
+                )
 
         worksheet.clear()
         worksheet.update(
