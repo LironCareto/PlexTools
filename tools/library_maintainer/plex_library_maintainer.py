@@ -34,6 +34,7 @@ VISUAL_TIMING_TOLERANCE_SECONDS = 2.0
 VISUAL_SAMPLE_FRACTIONS = (0.12, 0.25, 0.40, 0.55, 0.70, 0.85)
 VISUAL_SAMPLE_FRAMES = 8
 VISUAL_MAX_WIDTH = 640
+GOOGLE_SHEET_PROGRESS_GROUPS = 10
 DUPLICATE_TSV_FIELDNAMES = [
     "library", "title", "year", "metadata_id", "version_count",
     "media_id", "assessment", "cut_cluster", "cut_class", "files",
@@ -2684,6 +2685,8 @@ def visual_sample_metrics(
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=45,
             check=False,
         )
@@ -3090,6 +3093,82 @@ def duplicate_sheet_values(
     return values
 
 
+def append_duplicate_rows_to_google_sheet(
+    rows: list[dict[str, object]],
+    settings: dict[str, object],
+) -> tuple[str, str]:
+    """Append completed duplicate rows to an already initialized worksheet."""
+    if not rows:
+        return (
+            str(settings.get("spreadsheet_id") or ""),
+            str(settings.get("worksheet") or "duplicates"),
+        )
+
+    credentials_file = settings.get("credentials_file")
+    spreadsheet_id = settings.get("spreadsheet_id")
+    worksheet_name = settings.get("worksheet")
+
+    if not isinstance(credentials_file, Path):
+        raise ValueError(
+            "Google Sheets credentials are not configured. Set "
+            "tools.library_maintainer.google_sheets.credentials_file in config.json."
+        )
+    if not credentials_file.is_file():
+        raise ValueError(
+            f"Google Sheets credentials file not found: {credentials_file}"
+        )
+    if not isinstance(spreadsheet_id, str) or not spreadsheet_id.strip():
+        raise ValueError(
+            "Google Sheets spreadsheet ID is not configured. Set "
+            "tools.library_maintainer.google_sheets.spreadsheet_id in config.json."
+        )
+    if not isinstance(worksheet_name, str) or not worksheet_name:
+        raise ValueError("Google Sheets worksheet name is not configured.")
+
+    try:
+        import gspread
+    except ImportError as exc:
+        raise ValueError(
+            "Google Sheets export requires the optional gspread dependency. "
+            "Install it with: /bin/python3 -m pip install -r "
+            "requirements-google-sheets.txt"
+        ) from exc
+
+    try:
+        client = gspread.service_account(filename=str(credentials_file))
+        spreadsheet = client.open_by_key(spreadsheet_id)
+        try:
+            worksheet = spreadsheet.worksheet(worksheet_name)
+        except gspread.WorksheetNotFound:
+            worksheet = next(
+                (
+                    candidate
+                    for candidate in spreadsheet.worksheets()
+                    if candidate.title.casefold() == worksheet_name.casefold()
+                ),
+                None,
+            )
+            if worksheet is None:
+                raise ValueError(
+                    f"Google Sheets worksheet not found after initialization: "
+                    f"{worksheet_name}"
+                )
+
+        worksheet.append_rows(
+            [
+                [row.get(field, "") for field in DUPLICATE_TSV_FIELDNAMES]
+                for row in rows
+            ],
+            value_input_option="RAW",
+        )
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"Google Sheets append failed: {exc}") from exc
+
+    return spreadsheet_id, worksheet.title
+
+
 def publish_duplicate_rows_to_google_sheet(
     rows: list[dict[str, object]],
     settings: dict[str, object],
@@ -3264,6 +3343,8 @@ def print_duplicate_report(
     tsv_rows: list[dict[str, object]] = []
     detailed_console = tsv_path is None
     processed_versions = 0
+    google_sheet_row_start = 0
+    google_sheet_progress_error = google_sheet_init_error
 
     for group_index, group in enumerate(groups, start=1):
         group_row_start = len(tsv_rows)
@@ -3347,6 +3428,25 @@ def print_duplicate_report(
                     end="\r",
                     flush=True,
                 )
+            if (
+                google_sheet is not None
+                and google_sheet_init_error is None
+                and group_index % GOOGLE_SHEET_PROGRESS_GROUPS == 0
+            ):
+                try:
+                    append_duplicate_rows_to_google_sheet(
+                        tsv_rows[google_sheet_row_start:],
+                        google_sheet,
+                    )
+                    google_sheet_row_start = len(tsv_rows)
+                    google_sheet_progress_error = None
+                except ValueError as exc:
+                    google_sheet_progress_error = str(exc)
+                    print(
+                        f"\nGoogle Sheet progress: ERROR - "
+                        f"{google_sheet_progress_error}",
+                        file=sys.stderr,
+                    )
             continue
 
         summaries = [
@@ -3499,6 +3599,26 @@ def print_duplicate_report(
                 flush=True,
             )
 
+        if (
+            google_sheet is not None
+            and google_sheet_init_error is None
+            and group_index % GOOGLE_SHEET_PROGRESS_GROUPS == 0
+        ):
+            try:
+                append_duplicate_rows_to_google_sheet(
+                    tsv_rows[google_sheet_row_start:],
+                    google_sheet,
+                )
+                google_sheet_row_start = len(tsv_rows)
+                google_sheet_progress_error = None
+            except ValueError as exc:
+                google_sheet_progress_error = str(exc)
+                print(
+                    f"\nGoogle Sheet progress: ERROR - "
+                    f"{google_sheet_progress_error}",
+                    file=sys.stderr,
+                )
+
         if detailed_console:
             print("  Group assessment:")
             for cluster_index, cluster in enumerate(clusters, start=1):
@@ -3524,13 +3644,14 @@ def print_duplicate_report(
         print()
 
     google_sheet_result = None
-    google_sheet_error = google_sheet_init_error
-    if google_sheet is not None:
+    google_sheet_error = google_sheet_progress_error
+    if google_sheet is not None and google_sheet_init_error is None:
         try:
-            google_sheet_result = publish_duplicate_rows_to_google_sheet(
-                tsv_rows,
+            google_sheet_result = append_duplicate_rows_to_google_sheet(
+                tsv_rows[google_sheet_row_start:],
                 google_sheet,
             )
+            google_sheet_row_start = len(tsv_rows)
             google_sheet_error = None
         except ValueError as exc:
             google_sheet_error = str(exc)
