@@ -1259,6 +1259,11 @@ def alignment_status(
     residuals = [abs(value) for value in refined_model.residuals]
     max_residual = max(residuals) if residuals else float("inf")
     median_residual = median(residuals)
+    inlier_ratio = (
+        len(refined_model.matches) / len(refined_candidates)
+        if refined_candidates
+        else 0.0
+    )
 
     refined_is_tight = (
         len(refined_candidates) >= 7
@@ -1266,11 +1271,39 @@ def alignment_status(
         and median_residual <= 0.20
     )
 
+    shifted_tail = (
+        sum(1 for _, residual in tail_results if abs(residual) >= 1.5)
+        if tail_results is not None
+        else 0
+    )
+    stable_tail = (
+        sum(1 for _, residual in tail_results if abs(residual) <= 0.75)
+        if tail_results is not None
+        else 0
+    )
+
     if len(refined_model.matches) >= 7 and refined_is_tight:
-        if tail_results is None or not any(
-            abs(residual) >= 1.5 for _, residual in tail_results
-        ):
+        if tail_results is None or shifted_tail == 0:
             return "CONSISTENT GLOBAL AFFINE ALIGNMENT"
+
+    # A dense validation pass is deliberately more robust than a sparse pass:
+    # low-resolution or heavily compressed sources can produce a handful of
+    # false visual candidates even when the global timing model is excellent.
+    # Require broad distributed support, a strong inlier fraction and an
+    # independently stable tail rather than letting one 0.5-0.75 s visual
+    # quantisation error veto the whole film.
+    if (
+        len(refined_candidates) >= 15
+        and len(refined_model.matches) >= 12
+        and inlier_ratio >= 0.75
+        and median_residual <= 0.20
+        and max_residual <= 0.75
+        and tail_results is not None
+        and len(tail_results) >= 5
+        and shifted_tail == 0
+        and stable_tail >= max(5, (len(tail_results) + 1) // 2)
+    ):
+        return "CONSISTENT GLOBAL AFFINE ALIGNMENT"
 
     # Lower-quality legacy encodes can lose one or two refined anchors even
     # when the timing model is sound. Accept six tight refined inliers only
@@ -1282,12 +1315,6 @@ def alignment_status(
         and tail_results is not None
         and len(tail_results) >= 5
     ):
-        stable_tail = sum(
-            1 for _, residual in tail_results if abs(residual) <= 0.75
-        )
-        shifted_tail = sum(
-            1 for _, residual in tail_results if abs(residual) >= 1.5
-        )
         if shifted_tail == 0 and stable_tail >= max(4, len(tail_results) // 2):
             return "CONSISTENT GLOBAL AFFINE ALIGNMENT"
 
