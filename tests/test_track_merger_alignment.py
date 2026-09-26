@@ -122,6 +122,35 @@ class AlignmentRegressionTests(unittest.TestCase):
             "CONSISTENT GLOBAL AFFINE ALIGNMENT",
         )
 
+    def test_dense_noisy_validation_can_be_consistent_with_stable_tail(self):
+        candidates = [
+            module.Match(float(i * 500), float(i * 500), 0.15)
+            for i in range(19)
+        ]
+        inliers = tuple(candidates[:15])
+        model = module.AlignmentModel(
+            slope=1.0,
+            intercept=0.0,
+            matches=inliers,
+            residuals=(
+                0.00, -0.08, 0.08, -0.16, 0.16,
+                -0.17, 0.17, -0.25, 0.25, -0.42,
+                0.42, -0.42, 0.58, -0.67, 0.10,
+            ),
+        )
+        tail = [
+            (module.Match(float(i), float(i), 0.12), residual)
+            for i, residual in enumerate(
+                (0.17, -0.08, 0.17, 0.42, 0.58, -0.58, -0.42, 0.08, 0.33)
+            )
+        ]
+
+        self.assertEqual(
+            module.alignment_status(model, candidates, tail),
+            "CONSISTENT GLOBAL AFFINE ALIGNMENT",
+        )
+
+
 
 if __name__ == "__main__":
     unittest.main()
