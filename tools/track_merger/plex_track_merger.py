@@ -1786,8 +1786,32 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Inspect and align two media masters, then optionally transplant "
             "one selected source audio stream into a new target-derived file."
-        )
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples (run from the PlexTools repository root):
+
+  Inspect source and target streams only:
+    /bin/python3 tools/track_merger/plex_track_merger.py SOURCE TARGET
+
+  Analyze visual timeline alignment without writing:
+    /bin/python3 tools/track_merger/plex_track_merger.py --align SOURCE TARGET
+
+  Transplant source audio stream 1 after validated alignment:
+    /bin/python3 tools/track_merger/plex_track_merger.py --merge --source-audio 1 --language spa --title "Spanish" --output OUTPUT SOURCE TARGET
+
+  Override output audio encoding:
+    /bin/python3 tools/track_merger/plex_track_merger.py --merge --source-audio 1 --audio-codec aac --audio-bitrate 512k --output OUTPUT SOURCE TARGET
+
+Notes:
+  - SOURCE is the media file containing the track to transplant.
+  - TARGET is the good master whose streams are preserved.
+  - --align is read-only.
+  - --merge always creates a new output and never overwrites SOURCE or TARGET.
+  - --merge requires --source-audio and --output.
+  - Alignment must pass the safety checks before a merge is allowed.
+""",
     )
+
     parser.add_argument(
         "source",
         type=Path,
@@ -1796,15 +1820,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "target",
         type=Path,
-        help="Media file that would receive the track.",
+        help="Good media master whose streams are preserved in the output.",
     )
-    parser.add_argument(
+
+    config_group = parser.add_argument_group("Configuration")
+    config_group.add_argument(
         "--config",
         type=Path,
         default=DEFAULT_CONFIG,
-        help="Shared PlexTools configuration file. Defaults to repository-root config.json.",
+        help=(
+            "Shared PlexTools configuration file. Defaults to the "
+            "repository-root config.json."
+        ),
     )
-    parser.add_argument(
+
+    mode_group = parser.add_argument_group("Operating mode")
+    mode_group.add_argument(
         "--align",
         action="store_true",
         help=(
@@ -1812,7 +1843,7 @@ def build_parser() -> argparse.ArgumentParser:
             "This can take several minutes on a NAS."
         ),
     )
-    parser.add_argument(
+    mode_group.add_argument(
         "--merge",
         action="store_true",
         help=(
@@ -1820,52 +1851,56 @@ def build_parser() -> argparse.ArgumentParser:
             "target streams plus the selected, retimed source audio stream."
         ),
     )
-    parser.add_argument(
+
+    transplant_group = parser.add_argument_group("Audio transplant")
+    transplant_group.add_argument(
         "--source-audio",
         type=int,
         metavar="STREAM_INDEX",
         help="Absolute ffprobe stream index of the source audio track.",
     )
-    parser.add_argument(
+    transplant_group.add_argument(
         "--output",
         type=Path,
         metavar="PATH",
         help="New output path. Existing files are never overwritten.",
     )
-    parser.add_argument(
+    transplant_group.add_argument(
         "--audio-codec",
         default="aac",
         help="Codec for the transplanted audio track. Default: aac.",
     )
-    parser.add_argument(
+    transplant_group.add_argument(
         "--audio-bitrate",
         metavar="BITRATE",
         help="Bitrate for transplanted audio, e.g. 512k. Default depends on channels.",
     )
-    parser.add_argument(
+    transplant_group.add_argument(
         "--language",
         metavar="CODE",
         help="Optional language metadata for the transplanted track, e.g. spa.",
     )
-    parser.add_argument(
+    transplant_group.add_argument(
         "--title",
         help="Optional title metadata for the transplanted audio track.",
     )
-    parser.add_argument(
+
+    alignment_group = parser.add_argument_group("Alignment tuning")
+    alignment_group.add_argument(
         "--coarse-anchors",
         type=int,
         default=7,
         metavar="N",
         help="Number of coarse visual anchors. Default: 7.",
     )
-    parser.add_argument(
+    alignment_group.add_argument(
         "--validation-anchors",
         type=int,
         default=11,
         metavar="N",
         help="Number of refined validation anchors. Default: 11.",
     )
-    parser.add_argument(
+    alignment_group.add_argument(
         "--search-radius",
         type=float,
         default=120.0,
