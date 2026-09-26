@@ -122,6 +122,14 @@ class AlignmentRegressionTests(unittest.TestCase):
             "CONSISTENT GLOBAL AFFINE ALIGNMENT",
         )
 
+    def test_isolated_tail_shift_can_be_cleared_by_stable_local_recheck(self):
+        residuals = (0.04, -0.08, 0.12, -0.17, 0.21, -0.11)
+        self.assertTrue(module.isolated_tail_shift_is_cleared(list(residuals)))
+
+    def test_isolated_tail_shift_is_not_cleared_when_local_shift_repeats(self):
+        residuals = (0.04, -0.08, 1.62, 1.71, 0.21, -0.11)
+        self.assertFalse(module.isolated_tail_shift_is_cleared(list(residuals)))
+
     def test_dense_noisy_validation_can_be_consistent_with_stable_tail(self):
         candidates = [
             module.Match(float(i * 500), float(i * 500), 0.15)
