@@ -1103,6 +1103,118 @@ def refined_alignment(
     return model, matches
 
 
+def isolated_tail_shift_is_cleared(
+    residuals: list[float],
+    minimum_matches: int = 4,
+) -> bool:
+    """Return whether a local recheck clears one isolated tail outlier."""
+    return (
+        len(residuals) >= minimum_matches
+        and all(abs(residual) <= 0.75 for residual in residuals)
+    )
+
+
+def recheck_isolated_tail_shift(
+    ffmpeg: str,
+    source: dict,
+    target: dict,
+    model: AlignmentModel,
+    source_time: float,
+) -> list[float]:
+    """Probe closely around one isolated tail deviation using direct frames.
+
+    This deliberately does not use temporal-sequence matching as timing
+    authority. The purpose is to determine whether neighboring direct visual
+    anchors follow the global affine model or corroborate a genuine local
+    timeline discontinuity.
+    """
+    source_duration = media_duration(source)
+    target_duration = media_duration(target)
+    if source_duration is None or target_duration is None:
+        return []
+
+    offsets = (-12.0, -8.0, -4.0, 4.0, 8.0, 12.0)
+    residuals: list[float] = []
+
+    print()
+    print("Isolated tail deviation recheck")
+    print("================================")
+    print(f"Source center         : {format_duration(source_time)}")
+    print("Local probes          : -12, -8, -4, +4, +8, +12 s")
+    print("Target search         : +/- 3 s at 24 fps around global mapping")
+    print()
+
+    for offset in offsets:
+        probe_time = source_time + offset
+        if not 0.0 <= probe_time < source_duration:
+            continue
+
+        frame = extract_frame(ffmpeg, source["path"], probe_time)
+        if frame is None:
+            print(
+                f"source {format_duration(probe_time)} -> no useful frame"
+            )
+            continue
+
+        source_fp = fingerprint(frame)
+        if source_fp.contrast < 10.0:
+            print(
+                f"source {format_duration(probe_time)} -> low-contrast frame"
+            )
+            continue
+
+        predicted_target = (model.slope * probe_time) + model.intercept
+        search_start = max(0.0, predicted_target - 3.0)
+        search_end = min(target_duration, predicted_target + 3.0)
+        target_frames = extract_window(
+            ffmpeg,
+            target["path"],
+            search_start,
+            max(0.5, search_end - search_start),
+            rate=24.0,
+        )
+        best = best_window_match(source_fp, target_frames)
+        if best is None:
+            print(
+                f"source {format_duration(probe_time)} -> no target frames"
+            )
+            continue
+
+        target_time, distance, uniqueness_margin = best
+        if uniqueness_margin is not None and uniqueness_margin < 0.015:
+            print(
+                f"source {format_duration(probe_time)} -> ambiguous target match "
+                f"distance={distance:.3f} margin={uniqueness_margin:.3f}"
+            )
+            continue
+        if distance > 0.45:
+            print(
+                f"source {format_duration(probe_time)} -> weak match "
+                f"{format_duration(target_time)} distance={distance:.3f}"
+            )
+            continue
+
+        residual = target_time - predicted_target
+        residuals.append(residual)
+        print(
+            f"source {format_duration(probe_time)} "
+            f"-> target {format_duration(target_time)} "
+            f"residual={residual:+.3f}s distance={distance:.3f}"
+        )
+
+    print()
+    print(f"Usable local matches  : {len(residuals)}")
+    print(
+        "Local recheck result  : "
+        + (
+            "isolated outlier not corroborated"
+            if isolated_tail_shift_is_cleared(residuals)
+            else "deviation not safely cleared"
+        )
+    )
+    return residuals
+
+
 def tail_discontinuity_scan(
     ffmpeg: str,
     source: dict,
@@ -1243,8 +1355,30 @@ def tail_discontinuity_scan(
         else:
             print(
                 "Tail scan result      : isolated late deviation; "
-                "needs another local check"
+                "running local corroboration"
             )
+            local_residuals = recheck_isolated_tail_shift(
+                ffmpeg,
+                source,
+                target,
+                model,
+                first_match.source_time,
+            )
+            if isolated_tail_shift_is_cleared(local_residuals):
+                results = [
+                    (match, residual)
+                    for match, residual in results
+                    if match is not first_match
+                ]
+                print(
+                    "Tail scan result      : isolated visual outlier cleared; "
+                    "global timeline remains stable"
+                )
+            else:
+                print(
+                    "Tail scan result      : isolated deviation remains "
+                    "unresolved"
+                )
     else:
         print("Tail scan result      : no clear late discontinuity detected")
 
