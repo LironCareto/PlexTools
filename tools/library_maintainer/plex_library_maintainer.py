@@ -29,6 +29,14 @@ LIBRARY_DB = "com.plexapp.plugins.library.db"
 DEFAULT_CONFIG = Path(__file__).resolve().parents[2] / "config.json"
 SUSPICIOUS_SIMILARITY_THRESHOLD = 0.55
 DUPLICATE_DURATION_TOLERANCE_SECONDS = 5.0
+DUPLICATE_TSV_FIELDNAMES = [
+    "library", "title", "year", "metadata_id", "version_count",
+    "media_id", "assessment", "cut_cluster", "cut_class", "files",
+    "file_count", "size_bytes", "size", "duration_seconds", "duration",
+    "bitrate_mbps", "video_bitrate_mbps", "resolution", "video_codec",
+    "video_profile", "bit_depth", "hdr", "audio", "subtitles",
+    "multipart", "mixed_video", "probe_errors",
+]
 
 VIDEO_EXTENSIONS = {
     ".avi", ".m2ts", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg",
@@ -2703,6 +2711,116 @@ def find_ffprobe():
     return None
 
 
+def google_sheet_settings(library_config: dict) -> dict[str, object]:
+    """Return private Google Sheets settings without requiring the dependency."""
+    raw = library_config.get("google_sheets", {})
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError(
+            "'tools.library_maintainer.google_sheets' in config must be a JSON object"
+        )
+
+    credentials_file = raw.get("credentials_file", "")
+    spreadsheet_id = raw.get("spreadsheet_id", "")
+    worksheet = raw.get("worksheet", "duplicates")
+
+    if credentials_file not in ("", None) and not isinstance(credentials_file, str):
+        raise ValueError(
+            "'tools.library_maintainer.google_sheets.credentials_file' "
+            "must be a string"
+        )
+    if spreadsheet_id not in ("", None) and not isinstance(spreadsheet_id, str):
+        raise ValueError(
+            "'tools.library_maintainer.google_sheets.spreadsheet_id' "
+            "must be a string"
+        )
+    if not isinstance(worksheet, str) or not worksheet.strip():
+        raise ValueError(
+            "'tools.library_maintainer.google_sheets.worksheet' "
+            "must be a non-empty string"
+        )
+
+    return {
+        "credentials_file": (
+            Path(credentials_file).expanduser() if credentials_file else None
+        ),
+        "spreadsheet_id": spreadsheet_id or "",
+        "worksheet": worksheet.strip(),
+    }
+
+
+def duplicate_sheet_values(
+    rows: list[dict[str, object]],
+) -> list[list[object]]:
+    """Build the exact tabular payload used for Google Sheets."""
+    values: list[list[object]] = [list(DUPLICATE_TSV_FIELDNAMES)]
+    values.extend(
+        [row.get(field, "") for field in DUPLICATE_TSV_FIELDNAMES]
+        for row in rows
+    )
+    return values
+
+
+def publish_duplicate_rows_to_google_sheet(
+    rows: list[dict[str, object]],
+    settings: dict[str, object],
+) -> tuple[str, str]:
+    """Replace one worksheet with the duplicate-report rows."""
+    credentials_file = settings.get("credentials_file")
+    spreadsheet_id = settings.get("spreadsheet_id")
+    worksheet_name = settings.get("worksheet")
+
+    if not isinstance(credentials_file, Path):
+        raise ValueError(
+            "Google Sheets credentials are not configured. Set "
+            "tools.library_maintainer.google_sheets.credentials_file in config.json."
+        )
+    if not credentials_file.is_file():
+        raise ValueError(
+            f"Google Sheets credentials file not found: {credentials_file}"
+        )
+    if not isinstance(spreadsheet_id, str) or not spreadsheet_id.strip():
+        raise ValueError(
+            "Google Sheets spreadsheet ID is not configured. Set "
+            "tools.library_maintainer.google_sheets.spreadsheet_id in config.json."
+        )
+    if not isinstance(worksheet_name, str) or not worksheet_name:
+        raise ValueError("Google Sheets worksheet name is not configured.")
+
+    try:
+        import gspread
+    except ImportError as exc:
+        raise ValueError(
+            "Google Sheets export requires the optional gspread dependency. "
+            "Install it with: /bin/python3 -m pip install -r "
+            "requirements-google-sheets.txt"
+        ) from exc
+
+    try:
+        client = gspread.service_account(filename=str(credentials_file))
+        spreadsheet = client.open_by_key(spreadsheet_id)
+        try:
+            worksheet = spreadsheet.worksheet(worksheet_name)
+        except gspread.WorksheetNotFound:
+            worksheet = spreadsheet.add_worksheet(
+                title=worksheet_name,
+                rows=max(100, len(rows) + 10),
+                cols=max(26, len(DUPLICATE_TSV_FIELDNAMES)),
+            )
+
+        worksheet.clear()
+        worksheet.update(
+            range_name="A1",
+            values=duplicate_sheet_values(rows),
+            value_input_option="RAW",
+        )
+    except Exception as exc:
+        raise ValueError(f"Google Sheets update failed: {exc}") from exc
+
+    return spreadsheet_id, worksheet_name
+
+
 def print_duplicate_report(
     conn: sqlite3.Connection,
     libraries: list[Library],
@@ -2711,6 +2829,7 @@ def print_duplicate_report(
     ffprobe_path: str | None = None,
     ffmpeg_path: str | None = None,
     tsv_path: Path | None = None,
+    google_sheet: dict[str, object] | None = None,
 ) -> int:
     groups = duplicate_movie_groups(conn, libraries, path_maps)
     version_count = sum(len(group["versions"]) for group in groups)
@@ -2972,24 +3091,27 @@ def print_duplicate_report(
 
     if tsv_path is not None:
         print()
-        fieldnames = [
-            "library", "title", "year", "metadata_id", "version_count",
-            "media_id", "assessment", "cut_cluster", "cut_class", "files",
-            "file_count", "size_bytes", "size", "duration_seconds", "duration",
-            "bitrate_mbps", "video_bitrate_mbps", "resolution", "video_codec", "video_profile",
-            "bit_depth", "hdr", "audio", "subtitles", "multipart",
-            "mixed_video", "probe_errors",
-        ]
         tsv_path.parent.mkdir(parents=True, exist_ok=True)
         with tsv_path.open("w", encoding="utf-8", newline="") as handle:
             writer = csv.DictWriter(
                 handle,
-                fieldnames=fieldnames,
+                fieldnames=DUPLICATE_TSV_FIELDNAMES,
                 delimiter="\t",
                 lineterminator="\n",
             )
             writer.writeheader()
             writer.writerows(tsv_rows)
+
+    google_sheet_result = None
+    google_sheet_error = None
+    if google_sheet is not None:
+        try:
+            google_sheet_result = publish_duplicate_rows_to_google_sheet(
+                tsv_rows,
+                google_sheet,
+            )
+        except ValueError as exc:
+            google_sheet_error = str(exc)
 
     print("M4 duplicate summary")
     print("====================")
@@ -3002,13 +3124,19 @@ def print_duplicate_report(
     if tsv_path is not None:
         print(f"TSV report          : {tsv_path}")
         print(f"TSV rows            : {len(tsv_rows)}")
+    if google_sheet_result is not None:
+        spreadsheet_id, worksheet_name = google_sheet_result
+        print(f"Google Sheet        : updated worksheet '{worksheet_name}'")
+        print(f"Spreadsheet ID      : {spreadsheet_id}")
+    elif google_sheet_error is not None:
+        print(f"Google Sheet        : ERROR - {google_sheet_error}")
     if probe_error_details:
         print()
         print("Probe error details")
         print("===================")
         for error in probe_error_details:
             print(f"- {error}")
-    return 1 if probe_errors else 0
+    return 1 if probe_errors or google_sheet_error is not None else 0
 
 
 
@@ -3092,6 +3220,8 @@ def build_parser() -> argparse.ArgumentParser:
             "    %(prog)s --report duplicates --probe-media\n\n"
             "  Export duplicate analysis to TSV:\n"
             "    %(prog)s --report duplicates --probe-media --tsv duplicates.tsv\n\n"
+            "  Export TSV and publish the same rows to Google Sheets:\n"
+            "    %(prog)s --report duplicates --probe-media --google-sheet\n\n"
             "  Analyze folder collisions (M3):\n"
             "    %(prog)s --analyze-collisions\n\n"
             "  Plan collision merges without writing:\n"
@@ -3225,6 +3355,15 @@ def build_parser() -> argparse.ArgumentParser:
             "Example: --tsv duplicates.tsv"
         ),
     )
+    duplicates.add_argument(
+        "--google-sheet",
+        action="store_true",
+        help=(
+            "With --report duplicates, also replace the configured Google Sheets "
+            "worksheet with the report rows. If --tsv is omitted, duplicates.tsv "
+            "is still written locally first."
+        ),
+    )
 
     return parser
 
@@ -3280,6 +3419,13 @@ def main() -> int:
     if args.tsv is not None and args.report != "duplicates":
         print(
             "[FATAL] --tsv requires --report duplicates.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if args.google_sheet and args.report != "duplicates":
+        print(
+            "[FATAL] --google-sheet requires --report duplicates.",
             file=sys.stderr,
         )
         return 2
@@ -3351,6 +3497,15 @@ def main() -> int:
                     "of names or IDs"
                 )
             requested_libraries = [str(item) for item in raw_libraries]
+
+        google_sheet_config = (
+            google_sheet_settings(library_config)
+            if args.google_sheet
+            else None
+        )
+        duplicate_tsv_path = args.tsv
+        if args.google_sheet and duplicate_tsv_path is None:
+            duplicate_tsv_path = Path("duplicates.tsv")
     except (ValueError, argparse.ArgumentTypeError) as exc:
         print(f"[FATAL] {exc}", file=sys.stderr)
         return 2
@@ -3397,7 +3552,8 @@ def main() -> int:
                 probe_media=args.probe_media,
                 ffprobe_path=ffprobe_path,
                 ffmpeg_path=ffmpeg_path,
-                tsv_path=args.tsv,
+                tsv_path=duplicate_tsv_path,
+                google_sheet=google_sheet_config,
             )
 
         plans, root_file_plans, build_review, unsafe_names, build_skipped = build_plans(
