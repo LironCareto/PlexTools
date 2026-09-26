@@ -24,18 +24,25 @@ from difflib import SequenceMatcher
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+from statistics import median
 
 LIBRARY_DB = "com.plexapp.plugins.library.db"
 DEFAULT_CONFIG = Path(__file__).resolve().parents[2] / "config.json"
 SUSPICIOUS_SIMILARITY_THRESHOLD = 0.55
 DUPLICATE_DURATION_TOLERANCE_SECONDS = 5.0
+VISUAL_TIMING_TOLERANCE_SECONDS = 2.0
+VISUAL_SAMPLE_FRACTIONS = (0.12, 0.25, 0.40, 0.55, 0.70, 0.85)
+VISUAL_SAMPLE_FRAMES = 8
+VISUAL_MAX_WIDTH = 640
 DUPLICATE_TSV_FIELDNAMES = [
     "library", "title", "year", "metadata_id", "version_count",
     "media_id", "assessment", "cut_cluster", "cut_class", "files",
     "file_count", "size_bytes", "size", "duration_seconds", "duration",
     "bitrate_mbps", "video_bitrate_mbps", "resolution", "video_codec",
-    "video_profile", "bit_depth", "hdr", "audio", "subtitles",
-    "multipart", "mixed_video", "probe_errors",
+    "video_profile", "bit_depth", "hdr",
+    "visual_samples", "visual_blur", "visual_blockiness",
+    "visual_assessment", "visual_confidence", "visual_notes",
+    "audio", "subtitles", "multipart", "mixed_video", "probe_errors",
 ]
 
 VIDEO_EXTENSIONS = {
@@ -2619,6 +2626,294 @@ def classify_duration_cluster(cluster):
     return result
 
 
+def find_ffmpeg():
+    """Locate ffmpeg in PATH or common package locations."""
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+
+    candidates = [
+        Path("/bin/ffmpeg"),
+        Path("/usr/bin/ffmpeg"),
+        Path("/usr/local/bin/ffmpeg"),
+    ]
+    candidates.extend(sorted(Path("/var/packages").glob("*/target/bin/ffmpeg")))
+
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
+def visual_sample_metrics(
+    ffmpeg: str,
+    path: Path,
+    timestamp: float,
+    common_width: int,
+):
+    """Measure blur and blocking around one position without changing media."""
+    filter_chain = (
+        f"scale={common_width}:-2:flags=lanczos,"
+        "blurdetect=block_width=32:block_height=32:block_pct=80,"
+        "blockdetect"
+    )
+    try:
+        completed = subprocess.run(
+            [
+                ffmpeg,
+                "-hide_banner",
+                "-nostdin",
+                "-loglevel",
+                "info",
+                "-ss",
+                f"{timestamp:.3f}",
+                "-i",
+                str(path),
+                "-map",
+                "0:v:0",
+                "-frames:v",
+                str(VISUAL_SAMPLE_FRAMES),
+                "-vf",
+                filter_chain,
+                "-an",
+                "-sn",
+                "-dn",
+                "-f",
+                "null",
+                "-",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=45,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return None, str(exc)
+
+    stderr = completed.stderr or ""
+    blur_matches = re.findall(r"blur mean:\s*([0-9]+(?:\.[0-9]+)?)", stderr)
+    block_matches = re.findall(r"block mean:\s*([0-9]+(?:\.[0-9]+)?)", stderr)
+    if completed.returncode != 0 or not blur_matches or not block_matches:
+        message = stderr.strip().splitlines()
+        tail = message[-1] if message else f"ffmpeg exited {completed.returncode}"
+        return None, tail
+
+    return {
+        "blur": float(blur_matches[-1]),
+        "blockiness": float(block_matches[-1]),
+    }, None
+
+
+def measure_visual_quality(ffmpeg: str, version, common_width: int):
+    """Return robust no-reference visual metrics sampled across one media file."""
+    if (
+        version["errors"]
+        or version["multipart"]
+        or version["mixed_video"]
+        or version["duration"] is None
+        or version["duration"] <= 0
+        or not version["video"]
+        or len(version["files"]) != 1
+    ):
+        return None
+
+    path = version["files"][0]
+    samples = []
+    errors = []
+    for fraction in VISUAL_SAMPLE_FRACTIONS:
+        timestamp = max(0.0, min(version["duration"] - 0.5, version["duration"] * fraction))
+        metrics, error = visual_sample_metrics(
+            ffmpeg,
+            path,
+            timestamp,
+            common_width,
+        )
+        if metrics is not None:
+            samples.append(metrics)
+        elif error:
+            errors.append(error)
+
+    if len(samples) < 3:
+        return {
+            "samples": len(samples),
+            "blur": None,
+            "blockiness": None,
+            "error": errors[-1] if errors else "too few usable samples",
+        }
+
+    return {
+        "samples": len(samples),
+        "blur": median(item["blur"] for item in samples),
+        "blockiness": median(item["blockiness"] for item in samples),
+        "error": "",
+    }
+
+
+def classify_visual_pair(left, right):
+    """Conservatively compare two no-reference visual metric summaries."""
+    if (
+        left is None
+        or right is None
+        or left.get("blur") is None
+        or right.get("blur") is None
+        or left.get("blockiness") is None
+        or right.get("blockiness") is None
+        or right["blur"] <= 0
+        or right["blockiness"] <= 0
+    ):
+        return "INCONCLUSIVE", "LOW"
+
+    blur_ratio = left["blur"] / right["blur"]
+    block_ratio = left["blockiness"] / right["blockiness"]
+
+    sharper = blur_ratio <= 0.88
+    softer = blur_ratio >= 1.14
+    less_blocking = block_ratio <= 0.80
+    more_blocking = block_ratio >= 1.25
+    blur_similar = 0.90 <= blur_ratio <= 1.11
+    block_similar = 0.80 <= block_ratio <= 1.25
+
+    if blur_similar and block_similar:
+        label = "SIMILAR"
+    elif sharper and more_blocking:
+        label = "SHARPER BUT MORE BLOCKING"
+    elif softer and less_blocking:
+        label = "CLEANER BUT SOFTER"
+    elif sharper and not more_blocking:
+        label = "SHARPER"
+    elif softer and not less_blocking:
+        label = "SOFTER"
+    elif less_blocking and not softer:
+        label = "LESS BLOCKING"
+    elif more_blocking and not sharper:
+        label = "MORE BLOCKING"
+    else:
+        label = "INCONCLUSIVE"
+
+    sample_floor = min(left.get("samples", 0), right.get("samples", 0))
+    strong_difference = (
+        blur_ratio <= 0.80
+        or blur_ratio >= 1.25
+        or block_ratio <= 0.65
+        or block_ratio >= 1.55
+    )
+    if sample_floor >= 5 and strong_difference and label not in {"SIMILAR", "INCONCLUSIVE"}:
+        confidence = "HIGH"
+    elif sample_floor >= 3 and label != "INCONCLUSIVE":
+        confidence = "MEDIUM"
+    else:
+        confidence = "LOW"
+    return label, confidence
+
+
+def assess_visual_cluster(ffmpeg: str, cluster):
+    """Assess image quality only where duration supports matched-position sampling."""
+    result = {}
+    if len(cluster) < 2:
+        return result
+
+    durations = [
+        version["duration"]
+        for version in cluster
+        if version["duration"] is not None
+    ]
+    if len(durations) != len(cluster):
+        return result
+
+    spread = max(durations) - min(durations)
+    if spread > VISUAL_TIMING_TOLERANCE_SECONDS:
+        for version in cluster:
+            result[version["media_id"]] = {
+                "samples": "",
+                "blur": "",
+                "blockiness": "",
+                "assessment": "TIMING MISMATCH",
+                "confidence": "LOW",
+                "notes": (
+                    f"duration spread {spread:.2f}s exceeds "
+                    f"{VISUAL_TIMING_TOLERANCE_SECONDS:.0f}s visual threshold"
+                ),
+            }
+        return result
+
+    widths = [
+        version["video"]["width"]
+        for version in cluster
+        if version["video"] and version["video"].get("width")
+    ]
+    if not widths:
+        return result
+    common_width = max(64, min(VISUAL_MAX_WIDTH, min(widths)))
+    if common_width % 2:
+        common_width -= 1
+
+    metrics_by_id = {
+        version["media_id"]: measure_visual_quality(ffmpeg, version, common_width)
+        for version in cluster
+    }
+
+    coded_aspects = []
+    for version in cluster:
+        video = version["video"] or {}
+        width = video.get("width") or 0
+        height = video.get("height") or 0
+        if width and height:
+            coded_aspects.append(width / height)
+    aspect_warning = (
+        bool(coded_aspects)
+        and max(coded_aspects) / min(coded_aspects) > 1.05
+    )
+
+    if len(cluster) == 2:
+        first, second = cluster
+        pairs = ((first, second), (second, first))
+        for version, other in pairs:
+            metrics = metrics_by_id.get(version["media_id"])
+            other_metrics = metrics_by_id.get(other["media_id"])
+            label, confidence = classify_visual_pair(metrics, other_metrics)
+            if aspect_warning and confidence == "HIGH":
+                confidence = "MEDIUM"
+
+            notes = [
+                "no-reference blur/block metrics",
+                f"normalized to {common_width}px width",
+            ]
+            if aspect_warning:
+                notes.append("coded aspect differs; letterbox/crop may affect metrics")
+            if metrics and metrics.get("error"):
+                notes.append(f"sampling warning: {metrics['error']}")
+
+            result[version["media_id"]] = {
+                "samples": metrics.get("samples", "") if metrics else "",
+                "blur": metrics.get("blur", "") if metrics else "",
+                "blockiness": metrics.get("blockiness", "") if metrics else "",
+                "assessment": label,
+                "confidence": confidence,
+                "notes": "; ".join(notes),
+            }
+        return result
+
+    for version in cluster:
+        metrics = metrics_by_id.get(version["media_id"])
+        notes = [
+            "metrics only for clusters with more than two versions",
+            f"normalized to {common_width}px width",
+        ]
+        if aspect_warning:
+            notes.append("coded aspect differs; letterbox/crop may affect metrics")
+        if metrics and metrics.get("error"):
+            notes.append(f"sampling warning: {metrics['error']}")
+        result[version["media_id"]] = {
+            "samples": metrics.get("samples", "") if metrics else "",
+            "blur": metrics.get("blur", "") if metrics else "",
+            "blockiness": metrics.get("blockiness", "") if metrics else "",
+            "assessment": "MULTI-VERSION METRICS",
+            "confidence": "LOW",
+            "notes": "; ".join(notes),
+        }
+    return result
+
+
 def describe_video(version) -> str:
     video = version["video"]
     if not video:
@@ -2839,6 +3134,7 @@ def print_duplicate_report(
     ffmpeg_path: str | None = None,
     tsv_path: Path | None = None,
     google_sheet: dict[str, object] | None = None,
+    visual_quality: bool = False,
 ) -> int:
     groups = duplicate_movie_groups(conn, libraries, path_maps)
     version_count = sum(len(group["versions"]) for group in groups)
@@ -2867,6 +3163,16 @@ def print_duplicate_report(
             )
             return 2
 
+    visual_ffmpeg = None
+    if visual_quality:
+        visual_ffmpeg = ffmpeg_path or find_ffmpeg()
+        if visual_ffmpeg is None:
+            print(
+                "[FATAL] --visual-quality requested but ffmpeg could not be found.",
+                file=sys.stderr,
+            )
+            return 2
+
     print("PlexLibraryMaintainer M4 duplicate report")
     print("=========================================")
     print("Mode                : READ ONLY")
@@ -2874,6 +3180,7 @@ def print_duplicate_report(
     print(f"Media versions      : {version_count}")
     print(f"Media files         : {file_count}")
     print(f"Technical probe     : {probe_backend if probe_media else 'disabled'}")
+    print(f"Visual quality      : {'sampled' if visual_quality else 'disabled'}")
     if probe_media:
         print(
             f"Duration tolerance  : {DUPLICATE_DURATION_TOLERANCE_SECONDS:.0f}s "
@@ -2940,6 +3247,12 @@ def print_duplicate_report(
                         "video_profile": "",
                         "bit_depth": "",
                         "hdr": "",
+                        "visual_samples": "",
+                        "visual_blur": "",
+                        "visual_blockiness": "",
+                        "visual_assessment": "",
+                        "visual_confidence": "",
+                        "visual_notes": "",
                         "audio": "",
                         "subtitles": "",
                         "multipart": "",
@@ -2971,6 +3284,7 @@ def print_duplicate_report(
         clusters = duration_clusters(summaries)
         labels = {}
         cluster_by_media_id = {}
+        visual_by_media_id = {}
         for cluster_index, cluster in enumerate(clusters, start=1):
             cluster_labels = classify_duration_cluster(cluster)
             labels.update(cluster_labels)
@@ -2980,6 +3294,10 @@ def print_duplicate_report(
                     "SAME CUT" if len(cluster) > 1 else (
                         "REVIEW" if version["duration"] is None else "DIFFERENT CUT"
                     ),
+                )
+            if visual_quality and len(cluster) > 1:
+                visual_by_media_id.update(
+                    assess_visual_cluster(visual_ffmpeg, cluster)
                 )
 
         for index, version in enumerate(summaries, start=1):
@@ -3028,6 +3346,34 @@ def print_duplicate_report(
                     "video_profile": video.get("profile") or "",
                     "bit_depth": video.get("bit_depth") or "",
                     "hdr": video.get("hdr") or "",
+                    "visual_samples": visual_by_media_id.get(
+                        version["media_id"], {}
+                    ).get("samples", ""),
+                    "visual_blur": (
+                        f"{visual_by_media_id[version['media_id']]['blur']:.6f}"
+                        if isinstance(
+                            visual_by_media_id.get(version["media_id"], {}).get("blur"),
+                            (int, float),
+                        )
+                        else ""
+                    ),
+                    "visual_blockiness": (
+                        f"{visual_by_media_id[version['media_id']]['blockiness']:.6f}"
+                        if isinstance(
+                            visual_by_media_id.get(version["media_id"], {}).get("blockiness"),
+                            (int, float),
+                        )
+                        else ""
+                    ),
+                    "visual_assessment": visual_by_media_id.get(
+                        version["media_id"], {}
+                    ).get("assessment", ""),
+                    "visual_confidence": visual_by_media_id.get(
+                        version["media_id"], {}
+                    ).get("confidence", ""),
+                    "visual_notes": visual_by_media_id.get(
+                        version["media_id"], {}
+                    ).get("notes", ""),
                     "audio": describe_audio(version),
                     "subtitles": describe_subtitles(version),
                     "multipart": "yes" if version["multipart"] else "no",
@@ -3127,6 +3473,7 @@ def print_duplicate_report(
     print(f"Duplicate movies    : {len(groups)}")
     print(f"Media versions      : {version_count}")
     print(f"Technical probe     : {probe_backend if probe_media else 'disabled'}")
+    print(f"Visual quality      : {'sampled' if visual_quality else 'disabled'}")
     if probe_media:
         print(f"Probe binary        : {probe_binary}")
     print(f"Probe errors        : {probe_errors}")
@@ -3356,6 +3703,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     duplicates.add_argument(
+        "--visual-quality",
+        action="store_true",
+        help=(
+            "With --report duplicates --probe-media, sample matched positions from "
+            "same-timing versions with ffmpeg and add conservative blur/blocking "
+            "metrics plus a relative visual assessment. This is substantially slower."
+        ),
+    )
+    duplicates.add_argument(
         "--tsv",
         type=Path,
         metavar="FILE",
@@ -3421,6 +3777,15 @@ def main() -> int:
     if args.probe_media and args.report != "duplicates":
         print(
             "[FATAL] --probe-media requires --report duplicates.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if args.visual_quality and not (
+        args.report == "duplicates" and args.probe_media
+    ):
+        print(
+            "[FATAL] --visual-quality requires --report duplicates --probe-media.",
             file=sys.stderr,
         )
         return 2
@@ -3563,6 +3928,7 @@ def main() -> int:
                 ffmpeg_path=ffmpeg_path,
                 tsv_path=duplicate_tsv_path,
                 google_sheet=google_sheet_config,
+                visual_quality=args.visual_quality,
             )
 
         plans, root_file_plans, build_review, unsafe_names, build_skipped = build_plans(
