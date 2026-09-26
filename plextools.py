@@ -40,7 +40,7 @@ Tools:
 
 Examples:
   python3 plextools.py maintainer --help
-  python3 plextools.py maintainer --report duplicates --probe-media --tsv duplicates.tsv
+  python3 plextools.py maintainer --report duplicates --probe-media --google-sheet
   python3 plextools.py subs --help
   python3 plextools.py subs --write --language spa
   python3 plextools.py track --help
