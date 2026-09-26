@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Inspect and align two media files before transplanting tracks between them.
+"""Inspect, align, and safely transplant media tracks between two masters.
 
-The tool is deliberately read-only at this stage. It can inventory both files
-and, with --align, estimate a visual time mapping between two differently
-encoded masters. It never modifies or creates media files.
+Inventory and alignment are read-only. Audio transplantation always creates a
+new output file and never modifies either input file.
 """
 
 from __future__ import annotations
