@@ -1026,6 +1026,29 @@ def tail_discontinuity_scan(
     return results
 
 
+def alignment_status(
+    refined_model: AlignmentModel,
+    refined_candidates: list[Match],
+) -> str:
+    residuals = [abs(value) for value in refined_model.residuals]
+    max_residual = max(residuals) if residuals else float("inf")
+    median_residual = median(residuals)
+
+    if (
+        len(refined_model.matches) >= 7
+        and len(refined_candidates) >= 7
+        and max_residual <= 0.50
+        and median_residual <= 0.20
+    ):
+        return "CONSISTENT GLOBAL AFFINE ALIGNMENT"
+    if (
+        len(refined_model.matches) >= 5
+        and max_residual <= 0.75
+    ):
+        return "POSSIBLE GLOBAL AFFINE ALIGNMENT - REVIEW"
+    return "ALIGNMENT NOT RELIABLE"
+
+
 def print_alignment_result(
     source: dict,
     target: dict,
@@ -1065,19 +1088,7 @@ def print_alignment_result(
         print(f"Frame-rate ratio     : {frame_ratio:.10f}")
         print(f"Slope vs fps ratio   : {difference:.10f}")
 
-    if (
-        len(refined_model.matches) >= 7
-        and max_residual <= 0.50
-        and median_residual <= 0.20
-    ):
-        status = "CONSISTENT GLOBAL AFFINE ALIGNMENT"
-    elif (
-        len(refined_model.matches) >= 5
-        and max_residual <= 0.75
-    ):
-        status = "POSSIBLE GLOBAL AFFINE ALIGNMENT - REVIEW"
-    else:
-        status = "ALIGNMENT NOT RELIABLE"
+    status = alignment_status(refined_model, refined_candidates)
 
     print(f"Alignment status     : {status}")
     print(
