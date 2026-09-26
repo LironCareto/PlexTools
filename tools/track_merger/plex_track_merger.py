@@ -1031,42 +1031,40 @@ def refined_alignment(
         )
         weak = distance > 0.45
 
-        # Refined alignment is the timing authority used for retiming audio.
-        # Prefer a short temporal sequence whenever it produces a unique match:
-        # a sequence is much less sensitive than one compressed frame to
-        # long static shots, fades, grain, crop differences and low-resolution
-        # DVD/Xvid sources.
-        sequence = extract_anchor_sequence(
-            ffmpeg,
-            source["path"],
-            source_time,
-            source_duration,
-            source_fp,
-        )
-        sequence_best = best_sequence_window_match(
-            sequence,
-            target_frames,
-            initial_slope(source, target),
-        )
-
-        used_sequence = False
-        if sequence_best is not None:
-            (
-                sequence_time,
-                sequence_distance,
-                sequence_margin,
-            ) = sequence_best
-            sequence_unique = (
-                sequence_margin is None
-                or sequence_margin >= 0.008
+        # A temporal sequence is useful for rescuing an otherwise ambiguous
+        # anchor, but it must not replace a good single-frame timing match.
+        # On long or slowly changing shots a sequence can slide by several
+        # frames while still looking excellent, which biases the time model.
+        if ambiguous or weak:
+            sequence = extract_anchor_sequence(
+                ffmpeg,
+                source["path"],
+                source_time,
+                source_duration,
+                source_fp,
             )
-            if sequence_distance <= 0.38 and sequence_unique:
-                target_time = sequence_time
-                distance = sequence_distance
-                uniqueness_margin = sequence_margin
-                ambiguous = False
-                weak = False
-                used_sequence = True
+            sequence_best = best_sequence_window_match(
+                sequence,
+                target_frames,
+                initial_slope(source, target),
+            )
+
+            if sequence_best is not None:
+                (
+                    sequence_time,
+                    sequence_distance,
+                    sequence_margin,
+                ) = sequence_best
+                sequence_unique = (
+                    sequence_margin is None
+                    or sequence_margin >= 0.008
+                )
+                if sequence_distance <= 0.38 and sequence_unique:
+                    target_time = sequence_time
+                    distance = sequence_distance
+                    uniqueness_margin = sequence_margin
+                    ambiguous = False
+                    weak = False
 
         if ambiguous or weak:
             if ambiguous:
@@ -1091,11 +1089,9 @@ def refined_alignment(
         # inconsistencies.
         match = Match(source_time, target_time, distance)
         matches.append(match)
-        method = "sequence" if used_sequence else "frame"
         print(
             f"[{index}/{len(anchors)}] source {format_duration(source_time)} "
-            f"-> target {format_duration(target_time)} "
-            f"distance={distance:.3f} method={method}"
+            f"-> target {format_duration(target_time)} distance={distance:.3f}"
         )
 
     model = fit_robust_model(
@@ -1181,42 +1177,6 @@ def tail_discontinuity_scan(
             continue
 
         target_time, distance, uniqueness_margin = best
-        residual = target_time - predicted_target
-        needs_sequence_check = (
-            (uniqueness_margin is not None and uniqueness_margin < 0.015)
-            or distance > 0.45
-            or abs(residual) > 0.50
-        )
-
-        if needs_sequence_check:
-            sequence = extract_anchor_sequence(
-                ffmpeg,
-                source["path"],
-                source_time,
-                source_duration,
-                source_fp,
-            )
-            sequence_best = best_sequence_window_match(
-                sequence,
-                target_frames,
-                model.slope,
-            )
-            if sequence_best is not None:
-                (
-                    sequence_time,
-                    sequence_distance,
-                    sequence_margin,
-                ) = sequence_best
-                sequence_unique = (
-                    sequence_margin is None
-                    or sequence_margin >= 0.008
-                )
-                if sequence_distance <= 0.38 and sequence_unique:
-                    target_time = sequence_time
-                    distance = sequence_distance
-                    uniqueness_margin = sequence_margin
-                    residual = target_time - predicted_target
-
         if uniqueness_margin is not None and uniqueness_margin < 0.015:
             print(
                 f"[{index}/{len(requested_times)}] "
@@ -1232,6 +1192,7 @@ def tail_discontinuity_scan(
             )
             continue
 
+        residual = target_time - predicted_target
         match = Match(source_time, target_time, distance)
         results.append((match, residual))
         print(
@@ -1293,18 +1254,43 @@ def tail_discontinuity_scan(
 def alignment_status(
     refined_model: AlignmentModel,
     refined_candidates: list[Match],
+    tail_results: list[tuple[Match, float]] | None = None,
 ) -> str:
     residuals = [abs(value) for value in refined_model.residuals]
     max_residual = max(residuals) if residuals else float("inf")
     median_residual = median(residuals)
 
-    if (
-        len(refined_model.matches) >= 7
-        and len(refined_candidates) >= 7
+    refined_is_tight = (
+        len(refined_candidates) >= 7
         and max_residual <= 0.50
         and median_residual <= 0.20
+    )
+
+    if len(refined_model.matches) >= 7 and refined_is_tight:
+        if tail_results is None or not any(
+            abs(residual) >= 1.5 for _, residual in tail_results
+        ):
+            return "CONSISTENT GLOBAL AFFINE ALIGNMENT"
+
+    # Lower-quality legacy encodes can lose one or two refined anchors even
+    # when the timing model is sound. Accept six tight refined inliers only
+    # when an independent late-film scan provides substantial corroboration
+    # and contains no clear timeline shift.
+    if (
+        len(refined_model.matches) >= 6
+        and refined_is_tight
+        and tail_results is not None
+        and len(tail_results) >= 5
     ):
-        return "CONSISTENT GLOBAL AFFINE ALIGNMENT"
+        stable_tail = sum(
+            1 for _, residual in tail_results if abs(residual) <= 0.75
+        )
+        shifted_tail = sum(
+            1 for _, residual in tail_results if abs(residual) >= 1.5
+        )
+        if shifted_tail == 0 and stable_tail >= max(4, len(tail_results) // 2):
+            return "CONSISTENT GLOBAL AFFINE ALIGNMENT"
+
     if (
         len(refined_model.matches) >= 5
         and max_residual <= 0.75
@@ -1319,6 +1305,7 @@ def print_alignment_result(
     coarse_model: AlignmentModel,
     refined_model: AlignmentModel,
     refined_candidates: list[Match],
+    tail_results: list[tuple[Match, float]],
 ) -> None:
     residuals = [abs(value) for value in refined_model.residuals]
     max_residual = max(residuals) if residuals else float("inf")
@@ -1352,7 +1339,11 @@ def print_alignment_result(
         print(f"Frame-rate ratio     : {frame_ratio:.10f}")
         print(f"Slope vs fps ratio   : {difference:.10f}")
 
-    status = alignment_status(refined_model, refined_candidates)
+    status = alignment_status(
+        refined_model,
+        refined_candidates,
+        tail_results,
+    )
 
     print(f"Alignment status     : {status}")
     print(
@@ -1419,6 +1410,7 @@ def analyze_visual_alignment(
         coarse_model,
         refined_model,
         refined_candidates,
+        tail_results,
     )
     return refined_model, refined_candidates, tail_results
 
@@ -1567,7 +1559,7 @@ def transplant_audio(
     language: str | None,
     title: str | None,
 ) -> None:
-    if alignment_status(model, refined_candidates) != (
+    if alignment_status(model, refined_candidates, tail_results) != (
         "CONSISTENT GLOBAL AFFINE ALIGNMENT"
     ):
         raise ValueError(
