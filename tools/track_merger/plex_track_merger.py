@@ -1438,8 +1438,8 @@ def transplant_audio(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Inspect two media files as candidates for track transplantation. "
-            "Use --align for read-only visual timeline alignment."
+            "Inspect and align two media masters, then optionally transplant "
+            "one selected source audio stream into a new target-derived file."
         )
     )
     parser.add_argument(
@@ -1465,6 +1465,45 @@ def build_parser() -> argparse.ArgumentParser:
             "Run read-only visual alignment after the media inventory. "
             "This can take several minutes on a NAS."
         ),
+    )
+    parser.add_argument(
+        "--merge",
+        action="store_true",
+        help=(
+            "After validated alignment, create a new file containing all "
+            "target streams plus the selected, retimed source audio stream."
+        ),
+    )
+    parser.add_argument(
+        "--source-audio",
+        type=int,
+        metavar="STREAM_INDEX",
+        help="Absolute ffprobe stream index of the source audio track.",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        metavar="PATH",
+        help="New output path. Existing files are never overwritten.",
+    )
+    parser.add_argument(
+        "--audio-codec",
+        default="aac",
+        help="Codec for the transplanted audio track. Default: aac.",
+    )
+    parser.add_argument(
+        "--audio-bitrate",
+        metavar="BITRATE",
+        help="Bitrate for transplanted audio, e.g. 512k. Default depends on channels.",
+    )
+    parser.add_argument(
+        "--language",
+        metavar="CODE",
+        help="Optional language metadata for the transplanted track, e.g. spa.",
+    )
+    parser.add_argument(
+        "--title",
+        help="Optional title metadata for the transplanted audio track.",
     )
     parser.add_argument(
         "--coarse-anchors",
@@ -1502,6 +1541,18 @@ def main() -> int:
     if args.search_radius <= 0:
         print("[FATAL] --search-radius must be greater than zero", file=sys.stderr)
         return 2
+    if args.merge and args.source_audio is None:
+        print("[FATAL] --merge requires --source-audio", file=sys.stderr)
+        return 2
+    if args.merge and args.output is None:
+        print("[FATAL] --merge requires --output", file=sys.stderr)
+        return 2
+    if not args.merge and (args.source_audio is not None or args.output is not None):
+        print(
+            "[FATAL] --source-audio and --output are only used with --merge",
+            file=sys.stderr,
+        )
+        return 2
 
     try:
         config = load_config(args.config)
@@ -1510,7 +1561,7 @@ def main() -> int:
         target = probe_media(ffprobe, args.target)
         ffmpeg = (
             resolve_media_tool(config, "ffmpeg_path", "ffmpeg")
-            if args.align
+            if (args.align or args.merge)
             else None
         )
     except ValueError as exc:
@@ -1519,7 +1570,7 @@ def main() -> int:
 
     print("PlexTrackMerger")
     print("===============")
-    print("Mode      : READ ONLY")
+    print(f"Mode      : {'CREATE NEW OUTPUT' if args.merge else 'READ ONLY'}")
     print(f"Config    : {args.config}")
     print(f"ffprobe   : {ffprobe}")
     if ffmpeg is not None:
@@ -1530,17 +1581,49 @@ def main() -> int:
     print_inventory("Target", target)
     print_timing_comparison(source, target)
 
-    if not args.align:
+    if not args.align and not args.merge:
         return 0
 
-    return perform_visual_alignment(
-        ffmpeg,
-        source,
-        target,
-        coarse_anchors=args.coarse_anchors,
-        validation_anchors=args.validation_anchors,
-        search_radius=args.search_radius,
-    )
+    if not args.merge:
+        return perform_visual_alignment(
+            ffmpeg,
+            source,
+            target,
+            coarse_anchors=args.coarse_anchors,
+            validation_anchors=args.validation_anchors,
+            search_radius=args.search_radius,
+        )
+
+    try:
+        model, refined_candidates, tail_results = analyze_visual_alignment(
+            ffmpeg,
+            source,
+            target,
+            coarse_anchors=args.coarse_anchors,
+            validation_anchors=args.validation_anchors,
+            search_radius=args.search_radius,
+        )
+        transplant_audio(
+            ffmpeg,
+            ffprobe,
+            source,
+            target,
+            model,
+            refined_candidates,
+            tail_results,
+            args.source_audio,
+            args.output,
+            args.audio_codec,
+            args.audio_bitrate,
+            args.language,
+            args.title,
+        )
+    except ValueError as exc:
+        print()
+        print(f"[FATAL] {exc}", file=sys.stderr)
+        return 1
+
+    return 0
 
 
 if __name__ == "__main__":
