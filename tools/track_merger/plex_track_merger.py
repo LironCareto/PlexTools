@@ -1031,60 +1031,59 @@ def refined_alignment(
         )
         weak = distance > 0.45
 
+        # Refined alignment is the timing authority used for retiming audio.
+        # Prefer a short temporal sequence whenever it produces a unique match:
+        # a sequence is much less sensitive than one compressed frame to
+        # long static shots, fades, grain, crop differences and low-resolution
+        # DVD/Xvid sources.
+        sequence = extract_anchor_sequence(
+            ffmpeg,
+            source["path"],
+            source_time,
+            source_duration,
+            source_fp,
+        )
+        sequence_best = best_sequence_window_match(
+            sequence,
+            target_frames,
+            initial_slope(source, target),
+        )
+
+        used_sequence = False
+        if sequence_best is not None:
+            (
+                sequence_time,
+                sequence_distance,
+                sequence_margin,
+            ) = sequence_best
+            sequence_unique = (
+                sequence_margin is None
+                or sequence_margin >= 0.008
+            )
+            if sequence_distance <= 0.38 and sequence_unique:
+                target_time = sequence_time
+                distance = sequence_distance
+                uniqueness_margin = sequence_margin
+                ambiguous = False
+                weak = False
+                used_sequence = True
+
         if ambiguous or weak:
-            sequence = extract_anchor_sequence(
-                ffmpeg,
-                source["path"],
-                source_time,
-                source_duration,
-                source_fp,
-            )
-            sequence_best = best_sequence_window_match(
-                sequence,
-                target_frames,
-                coarse_model.slope,
-            )
-
-            if sequence_best is not None:
-                (
-                    sequence_time,
-                    sequence_distance,
-                    sequence_margin,
-                ) = sequence_best
-                sequence_unique = (
-                    sequence_margin is None
-                    or sequence_margin >= 0.008
+            if ambiguous:
+                print(
+                    f"[{index}/{len(anchors)}] source "
+                    f"{format_duration(source_time)} "
+                    f"-> ambiguous target match distance={distance:.3f} "
+                    f"margin={uniqueness_margin:.3f}"
                 )
-                if sequence_distance <= 0.38 and sequence_unique:
-                    target_time = sequence_time
-                    distance = sequence_distance
-                    uniqueness_margin = sequence_margin
-                    print(
-                        f"[{index}/{len(anchors)}] source "
-                        f"{format_duration(source_time)} -> sequence match "
-                        f"{format_duration(target_time)} "
-                        f"distance={distance:.3f} "
-                        f"margin={uniqueness_margin if uniqueness_margin is not None else float('nan'):.3f}"
-                    )
-                else:
-                    sequence_best = None
-
-            if sequence_best is None:
-                if ambiguous:
-                    print(
-                        f"[{index}/{len(anchors)}] source "
-                        f"{format_duration(source_time)} "
-                        f"-> ambiguous target match distance={distance:.3f} "
-                        f"margin={uniqueness_margin:.3f}"
-                    )
-                else:
-                    print(
-                        f"[{index}/{len(anchors)}] source "
-                        f"{format_duration(source_time)} "
-                        f"-> weak match {format_duration(target_time)} "
-                        f"distance={distance:.3f}"
-                    )
-                continue
+            else:
+                print(
+                    f"[{index}/{len(anchors)}] source "
+                    f"{format_duration(source_time)} "
+                    f"-> weak match {format_duration(target_time)} "
+                    f"distance={distance:.3f}"
+                )
+            continue
 
         # The refined search is only +/- 3 seconds around a model prediction,
         # so it can safely tolerate a much weaker perceptual match than the
@@ -1092,16 +1091,18 @@ def refined_alignment(
         # inconsistencies.
         match = Match(source_time, target_time, distance)
         matches.append(match)
+        method = "sequence" if used_sequence else "frame"
         print(
             f"[{index}/{len(anchors)}] source {format_duration(source_time)} "
-            f"-> target {format_duration(target_time)} distance={distance:.3f}"
+            f"-> target {format_duration(target_time)} "
+            f"distance={distance:.3f} method={method}"
         )
 
     model = fit_robust_model(
         matches,
         residual_limit=0.75,
         minimum_inliers=3,
-        expected_slope=coarse_model.slope,
+        expected_slope=initial_slope(source, target),
     )
     return model, matches
 
