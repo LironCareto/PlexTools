@@ -21,6 +21,10 @@ TOOLS = {
         ROOT / "tools" / "track_merger" / "plex_track_merger.py",
         "Inspect, align and transplant media tracks between masters.",
     ),
+    "mp4-normalizer": (
+        ROOT / "tools" / "mp4_normalizer" / "plex_mp4_normalizer.py",
+        "Incrementally normalize newly-added Plex MP4 files.",
+    ),
 }
 
 
@@ -34,9 +38,10 @@ Usage:
   python3 plextools.py TOOL [tool arguments...]
 
 Tools:
-  maintainer  Plex library normalization, collisions and duplicate analysis
-  subs        Plex subtitle blob extraction
-  track       Media-master alignment and audio-track transplant
+  maintainer      Plex library normalization, collisions and duplicate analysis
+  subs            Plex subtitle blob extraction
+  track           Media-master alignment and audio-track transplant
+  mp4-normalizer  Incremental lossless normalization of newly-added Plex MP4 files
 
 Examples:
   python3 plextools.py maintainer --help
@@ -45,6 +50,8 @@ Examples:
   python3 plextools.py subs --write --language spa
   python3 plextools.py track --help
   python3 plextools.py track --align SOURCE TARGET
+  python3 plextools.py mp4-normalizer run --write
+  python3 plextools.py mp4-normalizer backfill
 
 Each tool has its own detailed --help with complete examples.
 """
