@@ -19,6 +19,7 @@ Imported snapshots:
 - `tools/library_maintainer/` — conservative Plex library maintenance and duplicate-media analysis.
 - `tools/subs_extractor/` — extraction of subtitle blobs stored by Plex into sidecar files.
 - `tools/track_merger/` — track transplant/alignment tool under development.
+- `tools/mp4_normalizer/` — incremental, lossless MP4 normalization driven by Plex's own catalogue.
 
 ## Shared configuration
 
@@ -28,9 +29,23 @@ The shared sections contain Plex database/path settings and media-tool executabl
 
 `config.json` is ignored by Git and must not be committed. Individual tools still accept `--config` when an alternate configuration file is required.
 
+## MP4 normalizer
+
+The MP4 normalizer deliberately does **not** implement its own filesystem watcher. Plex already performs media discovery, so the normalizer treats Plex as the catalogue of truth and queries the Plex library database read-only.
+
+Normal operation is incremental: it stores a high-water mark made of Plex's addition timestamp plus `media_parts.id`, then only considers media parts Plex added after that cursor. This is intended for a lightweight hourly Synology Task Scheduler job:
+
+```bash
+python3 plextools.py mp4-normalizer run --write
+```
+
+Eligible MP4 files that are not already fast-start/streaming normalized are remuxed losslessly with stream copy and `+faststart`, validated, and atomically replaced. Backups are **not** kept by default; `--backup` is opt-in.
+
+The first `run --write` initializes the cursor at the current end of the Plex catalogue and changes no historical files. Use `backfill` explicitly to inspect or normalize existing library contents.
+
 ## Safety
 
-The tools retain their existing safety models: Plex databases are treated as read-only, destructive actions are avoided, and machine-specific configuration belongs in the ignored root `config.json`.
+Plex databases are always treated as read-only. Write-capable tools use explicit write flags, machine-specific configuration belongs in the ignored root `config.json`, and the MP4 normalizer validates its temporary remux before replacing the original media file.
 
 ## License
 
