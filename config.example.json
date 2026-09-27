@@ -21,6 +21,9 @@
       }
     },
     "subs_extractor": {},
-    "track_merger": {}
+    "track_merger": {},
+    "mp4_normalizer": {
+      "state_file": ""
+    }
   }
 }
