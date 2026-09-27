@@ -165,8 +165,13 @@ def schema_details(conn: sqlite3.Connection) -> tuple[str, bool, bool, bool]:
         timestamp_expr = "parts.created_at"
     elif "added_at" in part_columns:
         timestamp_expr = "parts.added_at"
+    elif "created_at" in media_columns:
+        timestamp_expr = "media.created_at"
+    elif "added_at" in media_columns:
+        timestamp_expr = "media.added_at"
     elif "added_at" in metadata_columns:
-        # Older/unusual schemas: less precise for later versions, but still useful.
+        # Older/unusual schemas: less precise for later-added versions, but still
+        # provides a safe catalogue cursor when no media/part timestamp exists.
         timestamp_expr = "metadata.added_at"
     else:
         raise ValueError(
